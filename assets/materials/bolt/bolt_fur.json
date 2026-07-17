@@ -1,0 +1,14 @@
+{
+  "name": "bolt_fur",
+  "albedo": "bolt_fur_albedo.png",
+  "normal": "bolt_fur_normal.png",
+  "roughness": "bolt_fur_roughness.png",
+  "metallic": "bolt_fur_metallic.png",
+  "height": "bolt_fur_height.png",
+  "tiling": 5.0,
+  "detailTiling": 18.0,
+  "triplanar": true,
+  "hotReload": true,
+  "source": "grok_imagine",
+  "pipeline": "luma_height_sobel_normal_v1"
+}

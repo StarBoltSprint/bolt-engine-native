@@ -54,6 +54,13 @@ public:
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
   bool uploadParticles(const std::vector<ParticleGPU>& particles);
 
+  /**
+   * Pure white GSD: Imagine sprite (magenta chroma-keyed) + fur albedo micro-detail.
+   * spritePath / furAlbedoPath empty = skip that map.
+   */
+  bool loadBoltCharacter(const std::string& spritePath, const std::string& furAlbedoPath);
+  bool hasBoltSprite() const { return boltSpriteValid_; }
+
   /** Load single PBR set into ground slot (legacy helper). */
   bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
                            const std::string& roughnessPath);
@@ -97,9 +104,11 @@ private:
                     GpuBuffer& out);
   void destroyBuffer(GpuBuffer& b);
   bool copyToBuffer(GpuBuffer& dst, const void* data, VkDeviceSize size);
-  bool createTextureFromRgba(const std::vector<uint8_t>& rgba, int w, int h, bool srgb, GpuTexture& out);
+  bool createTextureFromRgba(const std::vector<uint8_t>& rgba, int w, int h, bool srgb, GpuTexture& out,
+                             bool clampToEdge = false);
   bool createTextureFromGrey(const std::vector<uint8_t>& grey, int w, int h, GpuTexture& out);
   void destroyTexture(GpuTexture& t);
+  static void chromaKeyMagenta(std::vector<uint8_t>& rgba, int w, int h);
   bool transitionImage(VkImage image, VkImageLayout oldL, VkImageLayout newL);
   bool copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w, uint32_t h);
   VkShaderModule loadShaderModule(const std::string& path) const;
@@ -184,6 +193,10 @@ private:
   GpuTexture defaultAlbedo_{};
   GpuTexture defaultNormal_{};
   GpuTexture defaultRough_{};
+  GpuTexture boltSprite_{};
+  GpuTexture boltFur_{};
+  bool boltSpriteValid_ = false;
+  bool boltFurValid_ = false;
 
   int width_ = 1280;
   int height_ = 720;

@@ -99,4 +99,20 @@ void buildBoltMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIn
   pushSphere(outVerts, outIndices, {-0.32f, 1.0f, 0.f}, 0.12f, 8, 4);
 }
 
+void buildBoltBillboardMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIndices,
+                            float width, float height) {
+  outVerts.clear();
+  outIndices.clear();
+  const float hx = width * 0.5f;
+  // Facing +Z; UV: bottom-left origin so feet stay at bottom of sprite
+  auto push = [&](float x, float y, float u, float v) {
+    outVerts.push_back({{x, y, 0.f}, {0.f, 0.f, 1.f}, {u, v}});
+  };
+  push(-hx, 0.f, 0.f, 1.f);
+  push(hx, 0.f, 1.f, 1.f);
+  push(hx, height, 1.f, 0.f);
+  push(-hx, height, 0.f, 0.f);
+  outIndices = {0, 1, 2, 0, 2, 3};
+}
+
 } // namespace bolt

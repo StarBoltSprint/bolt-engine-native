@@ -4,6 +4,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <set>
@@ -69,6 +70,10 @@ void VulkanContext::shutdown() {
   destroyTexture(defaultAlbedo_);
   destroyTexture(defaultNormal_);
   destroyTexture(defaultRough_);
+  destroyTexture(boltSprite_);
+  destroyTexture(boltFur_);
+  boltSpriteValid_ = false;
+  boltFurValid_ = false;
   for (auto& u : uniformBuffers_) destroyBuffer(u);
   uniformMapped_.clear();
   if (descPool_) vkDestroyDescriptorPool(device_, descPool_, nullptr);
@@ -439,8 +444,8 @@ bool VulkanContext::createDescriptorSetLayout() {
   inst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
   // 4 material layers × 3 maps: ground(2-4), rock(5-7), path(8-10), stalk(11-13)
-  // binding 14 = particle SSBO (separate from foliage instances)
-  std::array<VkDescriptorSetLayoutBinding, 15> binds{};
+  // binding 14 = particle SSBO; 15 = bolt sprite; 16 = bolt fur
+  std::array<VkDescriptorSetLayoutBinding, 17> binds{};
   binds[0] = ubo;
   binds[1] = inst;
   for (uint32_t b = 2; b <= 13; ++b) {
@@ -455,6 +460,13 @@ bool VulkanContext::createDescriptorSetLayout() {
   binds[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   binds[14].descriptorCount = 1;
   binds[14].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  for (uint32_t b = 15; b <= 16; ++b) {
+    binds[b] = {};
+    binds[b].binding = b;
+    binds[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binds[b].descriptorCount = 1;
+    binds[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
 
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   ci.bindingCount = static_cast<uint32_t>(binds.size());
@@ -641,10 +653,19 @@ bool VulkanContext::createPipelines() {
   if (boltV && boltF) {
     stages[0].module = boltV;
     stages[1].module = boltF;
+    // Alpha sprite GSD — blend + depth test, no depth write (avoids card edge artifacts)
+    gp.pColorBlendState = &cbAlpha;
+    gp.pDepthStencilState = &dsNoWrite;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    gp.pRasterizationState = &rs;
     if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &boltPipeline_) !=
         VK_SUCCESS) {
       logWarn("bolt pipeline failed");
     }
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    gp.pRasterizationState = &rs;
+    gp.pColorBlendState = &cb;
+    gp.pDepthStencilState = &ds;
   }
 
   VkShaderModule pvert = loadShaderModule("assets/shaders/particle.vert.spv");
@@ -764,8 +785,8 @@ bool VulkanContext::createDescriptorPoolAndSets() {
   sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxFrames};
   // foliage instances + particles
   sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxFrames * 2};
-  // 4 materials × 3 maps per frame
-  sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 12};
+  // 4 materials × 3 maps + bolt sprite + fur per frame
+  sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 14};
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pci.poolSizeCount = static_cast<uint32_t>(sizes.size());
   pci.pPoolSizes = sizes.data();
@@ -894,7 +915,7 @@ bool VulkanContext::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w
 }
 
 bool VulkanContext::createTextureFromRgba(const std::vector<uint8_t>& rgba, int w, int h, bool srgb,
-                                          GpuTexture& out) {
+                                          GpuTexture& out, bool clampToEdge) {
   destroyTexture(out);
   const VkDeviceSize size = static_cast<VkDeviceSize>(rgba.size());
   GpuBuffer staging{};
@@ -943,9 +964,11 @@ bool VulkanContext::createTextureFromRgba(const std::vector<uint8_t>& rgba, int 
   VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   si.magFilter = VK_FILTER_LINEAR;
   si.minFilter = VK_FILTER_LINEAR;
-  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  const VkSamplerAddressMode addr =
+      clampToEdge ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  si.addressModeU = addr;
+  si.addressModeV = addr;
+  si.addressModeW = addr;
   si.maxAnisotropy = 1.f;
   if (vkCreateSampler(device_, &si, nullptr, &out.sampler) != VK_SUCCESS) return false;
   return true;
@@ -978,7 +1001,16 @@ void VulkanContext::updateMaterialDescriptors() {
     bindMaterialOrDefault(stalkMat_, sAlb, sNrm, sRgh);
 
     VkDescriptorBufferInfo particles{particleBuf_.buffer, 0, VK_WHOLE_SIZE};
-    std::array<VkWriteDescriptorSet, 15> writes{};
+    const GpuTexture* boltSpr =
+        (boltSpriteValid_ && boltSprite_.view) ? &boltSprite_ : &defaultAlbedo_;
+    const GpuTexture* boltFur =
+        (boltFurValid_ && boltFur_.view) ? &boltFur_ : &defaultAlbedo_;
+    VkDescriptorImageInfo iBolt{boltSpr->sampler, boltSpr->view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo iFur{boltFur->sampler, boltFur->view,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    std::array<VkWriteDescriptorSet, 17> writes{};
     auto fill = [&](int idx, uint32_t binding, VkDescriptorType type, const void* pBuf,
                     const VkDescriptorImageInfo* pImg) {
       writes[static_cast<size_t>(idx)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1005,8 +1037,72 @@ void VulkanContext::updateMaterialDescriptors() {
     fill(12, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sNrm);
     fill(13, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sRgh);
     fill(14, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &particles, nullptr);
+    fill(15, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iBolt);
+    fill(16, 16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iFur);
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
+}
+
+void VulkanContext::chromaKeyMagenta(std::vector<uint8_t>& rgba, int w, int h) {
+  const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+  for (size_t i = 0; i < n; ++i) {
+    const size_t o = i * 4;
+    const float r = rgba[o + 0] / 255.f;
+    const float g = rgba[o + 1] / 255.f;
+    const float b = rgba[o + 2] / 255.f;
+    // Distance from Imagine magenta ~ (0.76, 0.09, 0.36)
+    const float dr = r - 0.76f;
+    const float dg = g - 0.09f;
+    const float db = b - 0.36f;
+    const float dist = std::sqrt(dr * dr + dg * dg + db * db);
+    // Also catch hot pink / purple-magenta family (high R, low G, mid-high B)
+    const bool magFamily = (r > 0.55f && g < 0.45f && b > 0.25f && (r - g) > 0.2f);
+    float alpha = 1.f;
+    if (magFamily) {
+      alpha = std::clamp((dist - 0.12f) / 0.28f, 0.f, 1.f);
+      // Strong core magenta → fully transparent
+      if (dist < 0.18f) alpha = 0.f;
+    }
+    rgba[o + 3] = static_cast<uint8_t>(alpha * 255.f + 0.5f);
+    // Premultiply-ish clean edge: pull residual magenta toward white dog color
+    if (alpha < 0.99f && alpha > 0.01f) {
+      rgba[o + 0] = static_cast<uint8_t>(r * alpha * 255.f + (1.f - alpha) * 240.f);
+      rgba[o + 1] = static_cast<uint8_t>(g * alpha * 255.f + (1.f - alpha) * 245.f);
+      rgba[o + 2] = static_cast<uint8_t>(b * alpha * 255.f + (1.f - alpha) * 250.f);
+    }
+  }
+}
+
+bool VulkanContext::loadBoltCharacter(const std::string& spritePath,
+                                      const std::string& furAlbedoPath) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  bool any = false;
+
+  if (!spritePath.empty()) {
+    ImageData img;
+    if (loadImage(spritePath, img)) {
+      chromaKeyMagenta(img.pixels, img.width, img.height);
+      if (createTextureFromRgba(img.pixels, img.width, img.height, true, boltSprite_, true)) {
+        boltSpriteValid_ = true;
+        any = true;
+        logInfo("Bolt GSD sprite loaded (magenta keyed): " + spritePath);
+      }
+    }
+  }
+
+  if (!furAlbedoPath.empty()) {
+    ImageData fur;
+    if (loadImage(furAlbedoPath, fur)) {
+      if (createTextureFromRgba(fur.pixels, fur.width, fur.height, true, boltFur_, false)) {
+        boltFurValid_ = true;
+        any = true;
+        logInfo("Bolt fur albedo loaded: " + furAlbedoPath);
+      }
+    }
+  }
+
+  if (any) updateMaterialDescriptors();
+  return any;
 }
 
 bool VulkanContext::loadMaterialSet(const std::string& basePath, MaterialGpu& out) {
