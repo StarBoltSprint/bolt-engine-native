@@ -68,9 +68,11 @@ add_library(bolt_engine
   src/pcg/VegetationSpawner.cpp
   src/pcg/StalkMesh.cpp
   src/pcg/MeshPrimitives.cpp
+  src/pcg/BoltGsd.cpp
   src/ecs/Systems.cpp
   src/assets/MaterialLibrary.cpp
   src/assets/TextureLoader.cpp
+  src/assets/ObjLoader.cpp
   src/render/QualityTier.cpp
   src/render/RenderGraph.cpp
   src/render/VulkanContext.cpp

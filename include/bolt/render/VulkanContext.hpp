@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -51,6 +52,9 @@ public:
   bool uploadStalkMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
   bool uploadBlobMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
   bool uploadBoltMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
+  /** Upload one GSD part (0..BoltPart::Count-1). */
+  bool uploadBoltPart(int partIndex, const std::vector<VertexPC>& verts,
+                      const std::vector<uint32_t>& indices);
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
   bool uploadParticles(const std::vector<ParticleGPU>& particles);
 
@@ -60,6 +64,8 @@ public:
    */
   bool loadBoltFurPBR(const std::string& furBasePath);
   bool hasBoltFur() const { return boltFurValid_; }
+
+  static constexpr int kBoltPartCount = 7;
 
   /** Load single PBR set into ground slot (legacy helper). */
   bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
@@ -73,8 +79,8 @@ public:
   bool loadBiomeMaterials(const std::string& groundBase, const std::string& rockBase,
                           const std::string& pathBase, const std::string& stalkBase);
 
-  void drawFrame(const FrameUBO& ubo, uint32_t foliageCount, const ObjectPush& boltPush,
-                 uint32_t particleCount);
+  void drawFrame(const FrameUBO& ubo, uint32_t foliageCount,
+                 const ObjectPush* boltParts, int boltPartCount, uint32_t particleCount);
 
   std::uint32_t frameIndex() const { return frameIndex_; }
   VkDevice device() const { return device_; }
@@ -173,7 +179,8 @@ private:
   GpuMesh terrain_;
   GpuMesh stalk_;
   GpuMesh blob_;
-  GpuMesh bolt_;
+  GpuMesh bolt_; // legacy single mesh
+  std::array<GpuMesh, kBoltPartCount> boltParts_{};
   GpuBuffer foliageInstanceBuf_{};
   GpuBuffer particleBuf_{};
   uint32_t foliageCapacity_ = 0;

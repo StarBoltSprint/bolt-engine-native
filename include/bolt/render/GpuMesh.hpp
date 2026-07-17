@@ -7,9 +7,11 @@
 namespace bolt {
 
 struct VertexPC {
-  glm::vec3 pos;
-  glm::vec3 normal;
-  glm::vec2 uv;
+  glm::vec3 pos{0.f};
+  glm::vec3 normal{0.f, 1.f, 0.f};
+  glm::vec2 uv{0.f};
+  float matId = 0.f; // 0 fur, 1 eye, 2 nose, 3 ear, 4 pad, 5 aura
+  float pad = 0.f;
 };
 
 struct FoliageInstanceGPU {

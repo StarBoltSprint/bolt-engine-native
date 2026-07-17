@@ -61,6 +61,10 @@ void VulkanContext::shutdown() {
   destroyBuffer(blob_.index);
   destroyBuffer(bolt_.vertex);
   destroyBuffer(bolt_.index);
+  for (auto& p : boltParts_) {
+    destroyBuffer(p.vertex);
+    destroyBuffer(p.index);
+  }
   destroyBuffer(foliageInstanceBuf_);
   destroyBuffer(particleBuf_);
   destroyMaterialOwned(groundMat_);
@@ -523,10 +527,11 @@ bool VulkanContext::createPipelines() {
   bind.binding = 0;
   bind.stride = sizeof(VertexPC);
   bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-  std::array<VkVertexInputAttributeDescription, 3> attrs{};
+  std::array<VkVertexInputAttributeDescription, 4> attrs{};
   attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VertexPC, pos)};
   attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VertexPC, normal)};
   attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(VertexPC, uv)};
+  attrs[3] = {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(VertexPC, matId)};
 
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   vi.vertexBindingDescriptionCount = 1;
@@ -653,15 +658,19 @@ bool VulkanContext::createPipelines() {
   if (boltV && boltF) {
     stages[0].module = boltV;
     stages[1].module = boltF;
-    // Opaque 3D GSD mesh — depth write on, standard lighting
-    gp.pColorBlendState = &cb;
+    // GSD + aura: alpha blend for aura shell, depth test on, depth write for solid
+    gp.pColorBlendState = &cbAlpha;
     gp.pDepthStencilState = &ds;
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    rs.cullMode = VK_CULL_MODE_NONE; // ears / thin parts
     gp.pRasterizationState = &rs;
     if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &boltPipeline_) !=
         VK_SUCCESS) {
       logWarn("bolt pipeline failed");
     }
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    gp.pRasterizationState = &rs;
+    gp.pColorBlendState = &cb;
+    gp.pDepthStencilState = &ds;
   }
 
   VkShaderModule pvert = loadShaderModule("assets/shaders/particle.vert.spv");
@@ -1253,25 +1262,32 @@ bool VulkanContext::uploadBlobMesh(const std::vector<VertexPC>& verts,
 
 bool VulkanContext::uploadBoltMesh(const std::vector<VertexPC>& verts,
                                    const std::vector<uint32_t>& indices) {
+  return uploadBoltPart(0, verts, indices);
+}
+
+bool VulkanContext::uploadBoltPart(int partIndex, const std::vector<VertexPC>& verts,
+                                   const std::vector<uint32_t>& indices) {
   if (device_ == VK_NULL_HANDLE) return false;
+  if (partIndex < 0 || partIndex >= kBoltPartCount) return false;
+  if (verts.empty() || indices.empty()) return false;
   vkDeviceWaitIdle(device_);
-  destroyBuffer(bolt_.vertex);
-  destroyBuffer(bolt_.index);
+  GpuMesh& mesh = boltParts_[partIndex];
+  destroyBuffer(mesh.vertex);
+  destroyBuffer(mesh.index);
   const VkDeviceSize vsize = sizeof(VertexPC) * verts.size();
   const VkDeviceSize isize = sizeof(uint32_t) * indices.size();
   if (!createBuffer(vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                    bolt_.vertex))
+                    mesh.vertex))
     return false;
   if (!createBuffer(isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                    bolt_.index))
+                    mesh.index))
     return false;
-  copyToBuffer(bolt_.vertex, verts.data(), vsize);
-  copyToBuffer(bolt_.index, indices.data(), isize);
-  bolt_.vertexCount = static_cast<uint32_t>(verts.size());
-  bolt_.indexCount = static_cast<uint32_t>(indices.size());
-  logInfo("Bolt mesh GPU: " + std::to_string(bolt_.indexCount) + " indices");
+  copyToBuffer(mesh.vertex, verts.data(), vsize);
+  copyToBuffer(mesh.index, indices.data(), isize);
+  mesh.vertexCount = static_cast<uint32_t>(verts.size());
+  mesh.indexCount = static_cast<uint32_t>(indices.size());
   return true;
 }
 
@@ -1312,7 +1328,8 @@ bool VulkanContext::recreateSwapchain() {
   return true;
 }
 
-void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount, const ObjectPush& boltPush,
+void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount,
+                              const ObjectPush* boltParts, int boltPartCount,
                               uint32_t particleCount) {
   if (device_ == VK_NULL_HANDLE || !valid_) return;
   if (framebufferResized_) {
@@ -1396,16 +1413,32 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount, const 
     vkCmdDrawIndexed(cmd, stalk_.indexCount, foliageCount, 0, 0, 0);
   }
 
-  // White Bolt character
-  if (boltPipeline_ && bolt_.indexCount > 0) {
+  // Multi-part Bolt GSD (body, legs, tail, aura)
+  if (boltPipeline_ && boltParts && boltPartCount > 0) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boltPipeline_);
-    vkCmdPushConstants(cmd, pipelineLayout_,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(ObjectPush), &boltPush);
-    VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &bolt_.vertex.buffer, &off);
-    vkCmdBindIndexBuffer(cmd, bolt_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, bolt_.indexCount, 1, 0, 0, 0);
+    const int n = std::min(boltPartCount, kBoltPartCount);
+    for (int i = 0; i < n; ++i) {
+      if (boltParts_[i].indexCount == 0) continue;
+      // Draw aura (part 6) last for better blending
+      if (i == 6) continue;
+      vkCmdPushConstants(cmd, pipelineLayout_,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ObjectPush), &boltParts[i]);
+      VkDeviceSize off = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &boltParts_[i].vertex.buffer, &off);
+      vkCmdBindIndexBuffer(cmd, boltParts_[i].index.buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(cmd, boltParts_[i].indexCount, 1, 0, 0, 0);
+    }
+    // Aura shell last
+    if (n > 6 && boltParts_[6].indexCount > 0) {
+      vkCmdPushConstants(cmd, pipelineLayout_,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ObjectPush), &boltParts[6]);
+      VkDeviceSize off = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &boltParts_[6].vertex.buffer, &off);
+      vkCmdBindIndexBuffer(cmd, boltParts_[6].index.buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(cmd, boltParts_[6].indexCount, 1, 0, 0, 0);
+    }
   }
 
   // Dust / trail particles (binding 14 SSBO)

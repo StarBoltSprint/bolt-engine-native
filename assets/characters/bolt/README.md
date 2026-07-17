@@ -1,21 +1,29 @@
-# StarBoltSprint — Pure White German Shepherd
+# StarBoltSprint — White German Shepherd
 
-## Correct pipeline (same as crystal terrain)
+## Pipeline (same as crystal terrain)
 
 | Step | Bolt |
 |------|------|
-| **Geometry** | Procedural 3D GSD mesh (`buildBoltMesh`) — body, head, legs, tail, ears |
-| **Imagine** | Seamless pure-white fur tile → `bolt_fur_src` |
-| **Offline** | `bolt_grok_import` → `assets/materials/bolt/bolt_fur_*` PBR |
-| **Vulkan** | Triplanar fur albedo/normal/roughness on mesh + cyan energy eyes |
+| **Geometry** | Multi-part mid-poly GSD (body, 4 legs, tail, aura) — procedural, or override body via OBJ |
+| **Imagine** | Seamless fur → `bolt_fur_*` PBR |
+| **Vulkan** | UV + triplanar fur on parts; cyan eyes; lightning aura shell |
+| **Animation** | 4-phase diagonal run hop (legs) + tail wag + body bob |
 
-**Not** a 2D billboard. Character art turnarounds (`bolt_base.jpg` etc.) are identity reference only.
+## Artist override
 
-## Runtime
+Place `bolt_gsd.obj` here to replace the **body** mesh (legs/tail/aura stay procedural for animation):
 
 ```
-loadBoltFurPBR("assets/materials/bolt/bolt_fur")
-uploadBoltMesh(buildBoltMesh(...))
+assets/characters/bolt/bolt_gsd.obj
 ```
 
-Material regions on mesh (UV.x): fur | eye/energy | nose | ear-inner | pad
+`usemtl eye|nose|ear|pad|aura|fur` tags set material regions.
+
+Generated reference: `bolt_gsd_generated.obj` (body export).
+
+## Runtime features
+
+- Fur PBR (albedo/normal/roughness) from Grok import  
+- Run cycle driven by speed  
+- Aura + eye emissive scale with **Sprint Score / momentum**  
+- Soft dust trail (existing particles)  

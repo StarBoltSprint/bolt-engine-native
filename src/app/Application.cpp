@@ -3,10 +3,12 @@
 #include "bolt/world/TerrainMesh.hpp"
 #include "bolt/pcg/StalkMesh.hpp"
 #include "bolt/pcg/MeshPrimitives.hpp"
+#include "bolt/pcg/BoltGsd.hpp"
 #include "bolt/core/Log.hpp"
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -137,7 +139,7 @@ void Application::createCrystalScene() {
   buildStalkMesh(stalkV, stalkI);
   vulkan_.uploadStalkMesh(stalkV, stalkI);
 
-  // Soft shadow blob disc + 3D GSD mesh with fur PBR (Imagine → grok_import)
+  // Soft shadow blob + multi-part GSD (body/legs/tail/aura) + fur PBR
   {
     std::vector<VertexPC> bv;
     std::vector<uint32_t> bi;
@@ -145,15 +147,20 @@ void Application::createCrystalScene() {
     vulkan_.uploadBlobMesh(bv, bi);
   }
   {
-    std::vector<VertexPC> bv;
-    std::vector<uint32_t> bi;
-    buildBoltMesh(bv, bi);
-    vulkan_.uploadBoltMesh(bv, bi);
+    BoltCharacterMeshes ch;
+    // Prefer artist OBJ if present: assets/characters/bolt/bolt_gsd.obj
+    buildOrLoadBoltCharacter(ch, "assets/characters/bolt/bolt_gsd.obj");
+    saveBoltCharacterObj(ch, "assets/characters/bolt/bolt_gsd_generated.obj");
+    for (int i = 0; i < static_cast<int>(BoltPart::Count); ++i) {
+      auto& p = ch.parts[static_cast<size_t>(i)];
+      if (!p.vertices.empty()) vulkan_.uploadBoltPart(i, p.vertices, p.indices);
+    }
+    logInfo("Bolt multi-part GSD uploaded (run cycle + aura shell)");
   }
   {
     const bool ok = vulkan_.loadBoltFurPBR("assets/materials/bolt/bolt_fur");
-    if (ok) logInfo("StarBoltSprint 3D GSD + fur PBR active (Imagine materials on mesh)");
-    else logWarn("Bolt fur PBR missing — run grok import for assets/materials/bolt/bolt_fur");
+    if (ok) logInfo("Bolt fur PBR on UVs (Imagine → Vulkan)");
+    else logWarn("Bolt fur PBR missing under assets/materials/bolt/");
   }
 
   // Initial foliage batch around spawn
@@ -375,24 +382,34 @@ void Application::render() {
   // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
   ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
-  // 3D GSD: feet on ground, faces +Z, yaw-aligned
-  ObjectPush boltPush{};
+  // Multi-part GSD: root transform + run-cycle locals
   const float groundY =
       ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
-  glm::mat4 model(1.f);
-  model = glm::translate(model, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
-  model = glm::rotate(model, yaw, glm::vec3(0.f, 1.f, 0.f));
-  if (ctx_.sprint.sprinting) {
-    model = glm::rotate(model, -0.1f * ctx_.sprint.momentum, glm::vec3(1.f, 0.f, 0.f));
-  }
-  // Match web game scale (~1.95)
-  model = glm::scale(model, glm::vec3(1.55f));
-  boltPush.model = model;
-  // w = energy for cyan eyes / rim (sprint momentum)
-  boltPush.color = glm::vec4(1.f, 1.f, 1.f, 0.2f + ctx_.sprint.momentum * 0.65f);
+  glm::mat4 root(1.f);
+  root = glm::translate(root, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
+  root = glm::rotate(root, yaw, glm::vec3(0.f, 1.f, 0.f));
+  root = glm::scale(root, glm::vec3(1.65f));
 
-  vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()), boltPush,
-                    static_cast<uint32_t>(particleGpu_.size()));
+  const float speedF = std::clamp(ctx_.sprint.speed / 28.f, 0.f, 1.4f);
+  const float energy = std::clamp(0.15f + ctx_.sprint.score * 0.55f + ctx_.sprint.momentum * 0.45f,
+                                  0.f, 1.4f);
+  // Phase advances faster when sprinting
+  const float phase = std::fmod(static_cast<float>(time_.elapsed) * (1.2f + speedF * 3.5f), 1.f);
+
+  std::array<glm::mat4, static_cast<int>(BoltPart::Count)> local{};
+  boltAnimTransforms(phase, speedF, energy, local);
+
+  std::array<ObjectPush, VulkanContext::kBoltPartCount> boltDraw{};
+  for (int i = 0; i < VulkanContext::kBoltPartCount; ++i) {
+    boltDraw[static_cast<size_t>(i)].model = root * local[static_cast<size_t>(i)];
+    // Aura energy in .w — eyes also use this
+    float e = energy;
+    if (i == static_cast<int>(BoltPart::Aura)) e = energy; // shell intensity
+    boltDraw[static_cast<size_t>(i)].color = glm::vec4(1.f, 1.f, 1.f, e);
+  }
+
+  vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()), boltDraw.data(),
+                    VulkanContext::kBoltPartCount, static_cast<uint32_t>(particleGpu_.size()));
 }
 
 void Application::run() {
