@@ -49,7 +49,10 @@ public:
 
   bool uploadTerrain(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
   bool uploadStalkMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
+  bool uploadBlobMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
+  bool uploadBoltMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
+  bool uploadParticles(const std::vector<ParticleGPU>& particles);
 
   /** Load single PBR set into ground slot (legacy helper). */
   bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
@@ -63,7 +66,8 @@ public:
   bool loadBiomeMaterials(const std::string& groundBase, const std::string& rockBase,
                           const std::string& pathBase, const std::string& stalkBase);
 
-  void drawFrame(const FrameUBO& ubo, uint32_t foliageCount);
+  void drawFrame(const FrameUBO& ubo, uint32_t foliageCount, const ObjectPush& boltPush,
+                 uint32_t particleCount);
 
   std::uint32_t frameIndex() const { return frameIndex_; }
   VkDevice device() const { return device_; }
@@ -138,6 +142,9 @@ private:
   VkPipeline skyPipeline_ = VK_NULL_HANDLE;
   VkPipeline terrainPipeline_ = VK_NULL_HANDLE;
   VkPipeline foliagePipeline_ = VK_NULL_HANDLE;
+  VkPipeline blobPipeline_ = VK_NULL_HANDLE;
+  VkPipeline boltPipeline_ = VK_NULL_HANDLE;
+  VkPipeline particlePipeline_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> descSets_;
@@ -156,9 +163,17 @@ private:
 
   GpuMesh terrain_;
   GpuMesh stalk_;
+  GpuMesh blob_;
+  GpuMesh bolt_;
   GpuBuffer foliageInstanceBuf_{};
+  GpuBuffer particleBuf_{};
   uint32_t foliageCapacity_ = 0;
   uint32_t foliageCount_ = 0;
+  uint32_t particleCapacity_ = 0;
+  uint32_t particleCount_ = 0;
+
+  void bindSsbo(uint32_t setIndex, const GpuBuffer& buf);
+  void bindSsboBinding(uint32_t setIndex, uint32_t binding, const GpuBuffer& buf);
 
   MaterialGpu groundMat_{};
   MaterialGpu rockMat_{};

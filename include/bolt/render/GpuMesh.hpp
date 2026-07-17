@@ -17,6 +17,18 @@ struct FoliageInstanceGPU {
   glm::vec4 yawKind;  // x=yaw, y=kind
 };
 
+/** GPU particle (dust / trail) — matches particle.vert Particle struct */
+struct ParticleGPU {
+  glm::vec4 posSize;   // xyz, w=size
+  glm::vec4 colorLife; // rgb, a=life 0..1
+};
+
+/** Push constants for bolt mesh (std430-ish: mat4 + vec4) */
+struct ObjectPush {
+  glm::mat4 model;
+  glm::vec4 color;
+};
+
 struct GpuBuffer {
   VkBuffer buffer = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;

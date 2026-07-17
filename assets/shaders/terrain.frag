@@ -158,15 +158,18 @@ void main() {
 
   float pMask = pathMaskAt(vWorldPos, pathHalf, pathEdge, meanderAmp);
   pMask *= smoothstep(0.55, 0.25, slope);
+  float wet = 0.0;
   if (hasPath && pMask > 0.001) {
     vec3 pa = triplanarAlbedo(uPathAlbedo, geomN, vWorldPos, tiling * 1.15);
     vec3 pn = triplanarNormal(uPathNormal, geomN, vWorldPos, tiling * 1.15);
     float pr = triplanarRough(uPathRough, geomN, vWorldPos, tiling * 1.15);
-    pa = mix(pa, pa * vec3(1.18, 1.22, 1.14), 0.4);
+    pa = mix(pa, pa * vec3(1.2, 1.24, 1.16), 0.45);
     albedo = mix(albedo, pa, pMask);
-    N = normalize(mix(N, pn, pMask * 0.6));
-    rough = mix(rough, mix(pr, 0.32, 0.45), pMask);
-    albedo += vec3(0.08, 0.18, 0.22) * pMask * pMask * 0.5;
+    N = normalize(mix(N, pn, pMask * 0.65));
+    // Wet path: lower roughness toward glossy crystal frost (no SSR — just sharp specular)
+    rough = mix(rough, mix(pr, 0.12, 0.7), pMask);
+    wet = pMask;
+    albedo += vec3(0.1, 0.22, 0.28) * pMask * pMask * 0.55;
   }
 
   // —— Lighting ——
@@ -189,11 +192,14 @@ void main() {
 
   vec3 V = normalize(uFrame.cameraPos_time.xyz - vWorldPos);
   vec3 H = normalize(L1 + V);
-  float gloss = mix(110.0, 10.0, rough);
-  float spec = pow(max(dot(N, H), 0.0), gloss) * (1.0 - rough) * 0.55;
-  // Fresnel-ish rim
+  float gloss = mix(120.0, 10.0, rough);
+  // Schlick-ish fresnel for wet path glints
   float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  vec3 rim = vec3(0.25, 0.55, 0.75) * fres * 0.35;
+  float spec = pow(max(dot(N, H), 0.0), gloss) * (1.0 - rough) * mix(0.5, 1.15, wet);
+  spec *= (0.35 + 0.65 * fres);
+  // Extra sharp lobe for “wet frost” without screen-space reflections
+  float wetSpec = pow(max(dot(N, H), 0.0), mix(48.0, 220.0, wet)) * wet * 0.85;
+  vec3 rim = vec3(0.25, 0.55, 0.75) * fres * (0.3 + wet * 0.35);
 
   vec3 sunCol = vec3(1.0, 0.97, 0.92);
   vec3 fillCol = vec3(0.45, 0.7, 0.95);
@@ -201,10 +207,11 @@ void main() {
   col += albedo * sunCol * (0.42 * ndl1 + 0.28 * wrap);
   col += albedo * fillCol * (ndl2 + ndl3);
   col += sunCol * spec + rim;
+  col += vec3(0.75, 0.95, 1.0) * wetSpec;
   // Height emissive veins
   col += vec3(0.08, 0.28, 0.42) * 0.1 * smoothstep(2.0, 9.0, vHeight);
-  // Wet path specular boost
-  col += vec3(0.5, 0.85, 1.0) * spec * pMask * 0.35;
+  // Path center highlight
+  col += vec3(0.35, 0.7, 0.9) * wet * wet * 0.12;
 
   float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
   float fog = 1.0 - exp(-dist * 0.0045);

@@ -56,7 +56,12 @@ void VulkanContext::shutdown() {
   destroyBuffer(terrain_.index);
   destroyBuffer(stalk_.vertex);
   destroyBuffer(stalk_.index);
+  destroyBuffer(blob_.vertex);
+  destroyBuffer(blob_.index);
+  destroyBuffer(bolt_.vertex);
+  destroyBuffer(bolt_.index);
   destroyBuffer(foliageInstanceBuf_);
+  destroyBuffer(particleBuf_);
   destroyMaterialOwned(groundMat_);
   destroyMaterialOwned(rockMat_);
   destroyMaterialOwned(pathMat_);
@@ -71,6 +76,9 @@ void VulkanContext::shutdown() {
   if (skyPipeline_) vkDestroyPipeline(device_, skyPipeline_, nullptr);
   if (terrainPipeline_) vkDestroyPipeline(device_, terrainPipeline_, nullptr);
   if (foliagePipeline_) vkDestroyPipeline(device_, foliagePipeline_, nullptr);
+  if (blobPipeline_) vkDestroyPipeline(device_, blobPipeline_, nullptr);
+  if (boltPipeline_) vkDestroyPipeline(device_, boltPipeline_, nullptr);
+  if (particlePipeline_) vkDestroyPipeline(device_, particlePipeline_, nullptr);
   if (pipelineLayout_) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
   if (renderPass_) vkDestroyRenderPass(device_, renderPass_, nullptr);
   for (int i = 0; i < kMaxFrames; ++i) {
@@ -431,7 +439,8 @@ bool VulkanContext::createDescriptorSetLayout() {
   inst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
   // 4 material layers × 3 maps: ground(2-4), rock(5-7), path(8-10), stalk(11-13)
-  std::array<VkDescriptorSetLayoutBinding, 14> binds{};
+  // binding 14 = particle SSBO (separate from foliage instances)
+  std::array<VkDescriptorSetLayoutBinding, 15> binds{};
   binds[0] = ubo;
   binds[1] = inst;
   for (uint32_t b = 2; b <= 13; ++b) {
@@ -441,6 +450,11 @@ bool VulkanContext::createDescriptorSetLayout() {
     binds[b].descriptorCount = 1;
     binds[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   }
+  binds[14] = {};
+  binds[14].binding = 14;
+  binds[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  binds[14].descriptorCount = 1;
+  binds[14].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   ci.bindingCount = static_cast<uint32_t>(binds.size());
@@ -547,9 +561,16 @@ bool VulkanContext::createPipelines() {
   cb.attachmentCount = 1;
   cb.pAttachments = &blendAtt;
 
+  VkPushConstantRange pcr{};
+  pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcr.offset = 0;
+  pcr.size = sizeof(ObjectPush);
+
   VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   plci.setLayoutCount = 1;
   plci.pSetLayouts = &descLayout_;
+  plci.pushConstantRangeCount = 1;
+  plci.pPushConstantRanges = &pcr;
   if (vkCreatePipelineLayout(device_, &plci, nullptr, &pipelineLayout_) != VK_SUCCESS) return false;
 
   VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -580,6 +601,71 @@ bool VulkanContext::createPipelines() {
     }
   }
 
+  // Alpha-blended soft shadow blobs + particles
+  VkPipelineColorBlendAttachmentState blendAlpha = blendAtt;
+  blendAlpha.blendEnable = VK_TRUE;
+  blendAlpha.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+  blendAlpha.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blendAlpha.colorBlendOp = VK_BLEND_OP_ADD;
+  blendAlpha.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  blendAlpha.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blendAlpha.alphaBlendOp = VK_BLEND_OP_ADD;
+  VkPipelineColorBlendStateCreateInfo cbAlpha = cb;
+  cbAlpha.pAttachments = &blendAlpha;
+
+  VkPipelineDepthStencilStateCreateInfo dsNoWrite = ds;
+  dsNoWrite.depthWriteEnable = VK_FALSE;
+  dsNoWrite.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+  VkShaderModule bvert = loadShaderModule("assets/shaders/blob.vert.spv");
+  VkShaderModule bfrag = loadShaderModule("assets/shaders/blob.frag.spv");
+  if (bvert && bfrag) {
+    stages[0].module = bvert;
+    stages[1].module = bfrag;
+    gp.pColorBlendState = &cbAlpha;
+    gp.pDepthStencilState = &dsNoWrite;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    gp.pRasterizationState = &rs;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &blobPipeline_) !=
+        VK_SUCCESS) {
+      logWarn("blob pipeline failed");
+    }
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    gp.pRasterizationState = &rs;
+    gp.pColorBlendState = &cb;
+    gp.pDepthStencilState = &ds;
+  }
+
+  VkShaderModule boltV = loadShaderModule("assets/shaders/bolt.vert.spv");
+  VkShaderModule boltF = loadShaderModule("assets/shaders/bolt.frag.spv");
+  if (boltV && boltF) {
+    stages[0].module = boltV;
+    stages[1].module = boltF;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &boltPipeline_) !=
+        VK_SUCCESS) {
+      logWarn("bolt pipeline failed");
+    }
+  }
+
+  VkShaderModule pvert = loadShaderModule("assets/shaders/particle.vert.spv");
+  VkShaderModule pfrag = loadShaderModule("assets/shaders/particle.frag.spv");
+  if (pvert && pfrag) {
+    stages[0].module = pvert;
+    stages[1].module = pfrag;
+    gp.pColorBlendState = &cbAlpha;
+    gp.pDepthStencilState = &dsNoWrite;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    gp.pRasterizationState = &rs;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &particlePipeline_) !=
+        VK_SUCCESS) {
+      logWarn("particle pipeline failed");
+    }
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    gp.pRasterizationState = &rs;
+    gp.pColorBlendState = &cb;
+    gp.pDepthStencilState = &ds;
+  }
+
   // Sky: fullscreen triangle, no depth, no vertex buffer
   if (svert && sfrag) {
     stages[0].module = svert;
@@ -601,6 +687,12 @@ bool VulkanContext::createPipelines() {
   if (ffrag) vkDestroyShaderModule(device_, ffrag, nullptr);
   if (svert) vkDestroyShaderModule(device_, svert, nullptr);
   if (sfrag) vkDestroyShaderModule(device_, sfrag, nullptr);
+  if (bvert) vkDestroyShaderModule(device_, bvert, nullptr);
+  if (bfrag) vkDestroyShaderModule(device_, bfrag, nullptr);
+  if (boltV) vkDestroyShaderModule(device_, boltV, nullptr);
+  if (boltF) vkDestroyShaderModule(device_, boltF, nullptr);
+  if (pvert) vkDestroyShaderModule(device_, pvert, nullptr);
+  if (pfrag) vkDestroyShaderModule(device_, pfrag, nullptr);
   return terrainPipeline_ != VK_NULL_HANDLE;
 }
 
@@ -655,18 +747,23 @@ bool VulkanContext::createUniformBuffers() {
       return false;
     vkMapMemory(device_, uniformBuffers_[i].memory, 0, sizeof(FrameUBO), 0, &uniformMapped_[i]);
   }
-  // empty foliage buffer
+  // empty foliage + particle buffers
   createBuffer(sizeof(FoliageInstanceGPU) * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                foliageInstanceBuf_);
   foliageCapacity_ = 64;
+  createBuffer(sizeof(ParticleGPU) * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               particleBuf_);
+  particleCapacity_ = 64;
   return true;
 }
 
 bool VulkanContext::createDescriptorPoolAndSets() {
   std::array<VkDescriptorPoolSize, 3> sizes{};
   sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxFrames};
-  sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxFrames};
+  // foliage instances + particles
+  sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxFrames * 2};
   // 4 materials × 3 maps per frame
   sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 12};
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -880,7 +977,8 @@ void VulkanContext::updateMaterialDescriptors() {
     bindMaterialOrDefault(pathMat_, pAlb, pNrm, pRgh);
     bindMaterialOrDefault(stalkMat_, sAlb, sNrm, sRgh);
 
-    std::array<VkWriteDescriptorSet, 14> writes{};
+    VkDescriptorBufferInfo particles{particleBuf_.buffer, 0, VK_WHOLE_SIZE};
+    std::array<VkWriteDescriptorSet, 15> writes{};
     auto fill = [&](int idx, uint32_t binding, VkDescriptorType type, const void* pBuf,
                     const VkDescriptorImageInfo* pImg) {
       writes[static_cast<size_t>(idx)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -906,6 +1004,7 @@ void VulkanContext::updateMaterialDescriptors() {
     fill(11, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sAlb);
     fill(12, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sNrm);
     fill(13, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sRgh);
+    fill(14, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &particles, nullptr);
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
 }
@@ -1018,6 +1117,22 @@ bool VulkanContext::uploadStalkMesh(const std::vector<VertexPC>& verts,
   return true;
 }
 
+void VulkanContext::bindSsbo(uint32_t setIndex, const GpuBuffer& buf) {
+  bindSsboBinding(setIndex, 1, buf);
+}
+
+void VulkanContext::bindSsboBinding(uint32_t setIndex, uint32_t binding, const GpuBuffer& buf) {
+  if (setIndex >= descSets_.size() || !buf.buffer) return;
+  VkDescriptorBufferInfo ssbo{buf.buffer, 0, VK_WHOLE_SIZE};
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  w.dstSet = descSets_[setIndex];
+  w.dstBinding = binding;
+  w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  w.descriptorCount = 1;
+  w.pBufferInfo = &ssbo;
+  vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+}
+
 bool VulkanContext::uploadFoliage(const std::vector<FoliageInstanceGPU>& instances) {
   if (device_ == VK_NULL_HANDLE) return false;
   foliageCount_ = static_cast<uint32_t>(instances.size());
@@ -1030,20 +1145,77 @@ bool VulkanContext::uploadFoliage(const std::vector<FoliageInstanceGPU>& instanc
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                  foliageInstanceBuf_);
     foliageCapacity_ = cap;
-    // refresh descriptors
-    for (int i = 0; i < kMaxFrames; ++i) {
-      VkDescriptorBufferInfo ssbo{foliageInstanceBuf_.buffer, 0, VK_WHOLE_SIZE};
-      VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      w.dstSet = descSets_[i];
-      w.dstBinding = 1;
-      w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w.descriptorCount = 1;
-      w.pBufferInfo = &ssbo;
-      vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
-    }
+    for (int i = 0; i < kMaxFrames; ++i)
+      bindSsboBinding(static_cast<uint32_t>(i), 1, foliageInstanceBuf_);
   }
   copyToBuffer(foliageInstanceBuf_, instances.data(),
                sizeof(FoliageInstanceGPU) * foliageCount_);
+  return true;
+}
+
+bool VulkanContext::uploadParticles(const std::vector<ParticleGPU>& particles) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  particleCount_ = static_cast<uint32_t>(particles.size());
+  if (particleCount_ == 0) return true;
+  if (particleCount_ > particleCapacity_) {
+    vkDeviceWaitIdle(device_);
+    destroyBuffer(particleBuf_);
+    const uint32_t cap = std::max(particleCount_ * 2, 256u);
+    createBuffer(sizeof(ParticleGPU) * cap, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 particleBuf_);
+    particleCapacity_ = cap;
+    for (int i = 0; i < kMaxFrames; ++i)
+      bindSsboBinding(static_cast<uint32_t>(i), 14, particleBuf_);
+  }
+  copyToBuffer(particleBuf_, particles.data(), sizeof(ParticleGPU) * particleCount_);
+  return true;
+}
+
+bool VulkanContext::uploadBlobMesh(const std::vector<VertexPC>& verts,
+                                   const std::vector<uint32_t>& indices) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  vkDeviceWaitIdle(device_);
+  destroyBuffer(blob_.vertex);
+  destroyBuffer(blob_.index);
+  const VkDeviceSize vsize = sizeof(VertexPC) * verts.size();
+  const VkDeviceSize isize = sizeof(uint32_t) * indices.size();
+  if (!createBuffer(vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    blob_.vertex))
+    return false;
+  if (!createBuffer(isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    blob_.index))
+    return false;
+  copyToBuffer(blob_.vertex, verts.data(), vsize);
+  copyToBuffer(blob_.index, indices.data(), isize);
+  blob_.vertexCount = static_cast<uint32_t>(verts.size());
+  blob_.indexCount = static_cast<uint32_t>(indices.size());
+  return true;
+}
+
+bool VulkanContext::uploadBoltMesh(const std::vector<VertexPC>& verts,
+                                   const std::vector<uint32_t>& indices) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  vkDeviceWaitIdle(device_);
+  destroyBuffer(bolt_.vertex);
+  destroyBuffer(bolt_.index);
+  const VkDeviceSize vsize = sizeof(VertexPC) * verts.size();
+  const VkDeviceSize isize = sizeof(uint32_t) * indices.size();
+  if (!createBuffer(vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    bolt_.vertex))
+    return false;
+  if (!createBuffer(isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    bolt_.index))
+    return false;
+  copyToBuffer(bolt_.vertex, verts.data(), vsize);
+  copyToBuffer(bolt_.index, indices.data(), isize);
+  bolt_.vertexCount = static_cast<uint32_t>(verts.size());
+  bolt_.indexCount = static_cast<uint32_t>(indices.size());
+  logInfo("Bolt mesh GPU: " + std::to_string(bolt_.indexCount) + " indices");
   return true;
 }
 
@@ -1084,7 +1256,8 @@ bool VulkanContext::recreateSwapchain() {
   return true;
 }
 
-void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
+void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount, const ObjectPush& boltPush,
+                              uint32_t particleCount) {
   if (device_ == VK_NULL_HANDLE || !valid_) return;
   if (framebufferResized_) {
     recreateSwapchain();
@@ -1115,7 +1288,6 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
   vkBeginCommandBuffer(cmd, &bi);
 
   VkClearValue clears[2]{};
-  // Clear is overwritten by sky pass; keep deep fallback
   clears[0].color = {{0.015f, 0.03f, 0.08f, 1.f}};
   clears[1].depthStencil = {1.f, 0};
   VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -1137,7 +1309,7 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
                           &descSets_[frameIndex_], 0, nullptr);
 
-  // Sky first (no depth write)
+  // Sky first
   if (skyPipeline_) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -1151,12 +1323,42 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
     vkCmdDrawIndexed(cmd, terrain_.indexCount, 1, 0, 0, 0);
   }
 
+  // Soft contact shadows under stalks (before foliage so stalks sit on top)
+  if (blobPipeline_ && foliageCount > 0 && blob_.indexCount > 0) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blobPipeline_);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &blob_.vertex.buffer, &off);
+    vkCmdBindIndexBuffer(cmd, blob_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, blob_.indexCount, foliageCount, 0, 0, 0);
+  }
+
   if (foliagePipeline_ && foliageCount > 0 && stalk_.indexCount > 0) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, foliagePipeline_);
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &stalk_.vertex.buffer, &off);
     vkCmdBindIndexBuffer(cmd, stalk_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, stalk_.indexCount, foliageCount, 0, 0, 0);
+  }
+
+  // White Bolt character
+  if (boltPipeline_ && bolt_.indexCount > 0) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boltPipeline_);
+    vkCmdPushConstants(cmd, pipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ObjectPush), &boltPush);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &bolt_.vertex.buffer, &off);
+    vkCmdBindIndexBuffer(cmd, bolt_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, bolt_.indexCount, 1, 0, 0, 0);
+  }
+
+  // Dust / trail particles (binding 14 SSBO)
+  if (particlePipeline_ && particleCount > 0 && blob_.indexCount > 0 && particleBuf_.buffer) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline_);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &blob_.vertex.buffer, &off);
+    vkCmdBindIndexBuffer(cmd, blob_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, blob_.indexCount, particleCount, 0, 0, 0);
   }
 
   vkCmdEndRenderPass(cmd);

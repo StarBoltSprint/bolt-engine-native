@@ -67,6 +67,7 @@ add_library(bolt_engine
   src/pcg/PathGenerator.cpp
   src/pcg/VegetationSpawner.cpp
   src/pcg/StalkMesh.cpp
+  src/pcg/MeshPrimitives.cpp
   src/ecs/Systems.cpp
   src/assets/MaterialLibrary.cpp
   src/assets/TextureLoader.cpp

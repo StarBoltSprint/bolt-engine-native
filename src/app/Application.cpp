@@ -2,11 +2,13 @@
 #include "bolt/ecs/Components.hpp"
 #include "bolt/world/TerrainMesh.hpp"
 #include "bolt/pcg/StalkMesh.hpp"
+#include "bolt/pcg/MeshPrimitives.hpp"
 #include "bolt/core/Log.hpp"
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 namespace bolt {
@@ -135,8 +137,23 @@ void Application::createCrystalScene() {
   buildStalkMesh(stalkV, stalkI);
   vulkan_.uploadStalkMesh(stalkV, stalkI);
 
+  // Soft shadow blob disc + white Bolt mesh
+  {
+    std::vector<VertexPC> bv;
+    std::vector<uint32_t> bi;
+    buildShadowBlobMesh(bv, bi);
+    vulkan_.uploadBlobMesh(bv, bi);
+  }
+  {
+    std::vector<VertexPC> bv;
+    std::vector<uint32_t> bi;
+    buildBoltMesh(bv, bi);
+    vulkan_.uploadBoltMesh(bv, bi);
+  }
+
   // Initial foliage batch around spawn
   ctx_.sprint.position = glm::vec3(0.f, 2.f, 0.f);
+  lastTrailPos_ = ctx_.sprint.position;
   ctx_.sprint.yaw = 0.f;
   ctx_.sprint.score = 0.55f;
   ctx_.sprint.sprinting = true;
@@ -213,6 +230,7 @@ void Application::fixedUpdate(float dt) {
     }
     tr.position.x += vel.linear.x * dt;
     tr.position.z += vel.linear.z * dt;
+    // Eye/body height ~1.1 above feet; mesh feet sit on ground in render()
     tr.position.y = ctx_.height.sample(tr.position.x, tr.position.z, ctx_.sprint.score) + 1.1f;
     vel.linear.y = 0.f;
 
@@ -221,6 +239,81 @@ void Application::fixedUpdate(float dt) {
   }
 
   runSimulationSystems(registry_, ctx_, dt);
+}
+
+void Application::updateParticles(float dt) {
+  // Age / move
+  for (auto& p : particles_) {
+    p.life -= dt;
+    p.pos += p.vel * dt;
+    p.vel.y += 0.8f * dt; // slight lift then settle
+    p.vel *= (1.f - 1.8f * dt);
+    p.size *= (1.f - 0.35f * dt);
+  }
+  particles_.erase(std::remove_if(particles_.begin(), particles_.end(),
+                                  [](const CpuParticle& p) { return p.life <= 0.f; }),
+                   particles_.end());
+
+  const float speed = ctx_.sprint.speed;
+  const bool emit = ctx_.sprint.sprinting && speed > 4.f;
+  const glm::vec3 pos = ctx_.sprint.position;
+  const float yaw = ctx_.sprint.yaw;
+  const glm::vec3 back{-std::sin(yaw), 0.f, -std::cos(yaw)};
+  const glm::vec3 right{std::cos(yaw), 0.f, -std::sin(yaw)};
+
+  auto spawnOne = [&](glm::vec3 at, float size, float life, glm::vec3 col, glm::vec3 kick) {
+    if (particles_.size() >= 512) return;
+    CpuParticle p;
+    p.pos = at;
+    p.vel = kick;
+    p.life = life;
+    p.maxLife = life;
+    p.size = size;
+    p.color = col;
+    particles_.push_back(p);
+  };
+
+  // Sprint dust under feet
+  if (emit) {
+    emitAccum_ += dt * (8.f + speed * 0.55f);
+    while (emitAccum_ >= 1.f && particles_.size() < 512) {
+      emitAccum_ -= 1.f;
+      const float rx = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 0.35f;
+      const float rz = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 0.35f;
+      const float groundY = ctx_.height.sample(pos.x, pos.z, ctx_.sprint.score) + 0.12f;
+      spawnOne(glm::vec3(pos.x + rx, groundY, pos.z + rz), 0.25f + speed * 0.01f,
+               0.35f + 0.25f * ctx_.sprint.momentum,
+               glm::vec3(0.45f, 0.75f, 0.9f),
+               back * (2.f + speed * 0.08f) + right * rx * 2.f + glm::vec3(0.f, 1.2f, 0.f));
+    }
+  } else {
+    emitAccum_ = 0.f;
+  }
+
+  // Trail breadcrumbs while moving fast
+  const float moved = glm::length(glm::vec2(pos.x - lastTrailPos_.x, pos.z - lastTrailPos_.z));
+  trailDistAccum_ += moved;
+  lastTrailPos_ = pos;
+  if (speed > 6.f && trailDistAccum_ > 0.55f) {
+    trailDistAccum_ = 0.f;
+    const float groundY = ctx_.height.sample(pos.x, pos.z, ctx_.sprint.score) + 0.2f;
+    const float side = (std::rand() % 2 == 0) ? 1.f : -1.f;
+    spawnOne(pos + back * 0.4f + right * side * 0.15f + glm::vec3(0.f, groundY - pos.y + 0.15f, 0.f),
+             0.18f + ctx_.sprint.momentum * 0.2f, 0.55f,
+             glm::vec3(0.7f, 0.95f, 1.f), back * 1.5f + glm::vec3(0.f, 0.6f, 0.f));
+  }
+
+  // Upload GPU
+  particleGpu_.clear();
+  particleGpu_.reserve(particles_.size());
+  for (const auto& p : particles_) {
+    ParticleGPU g;
+    const float t = p.maxLife > 1e-4f ? std::clamp(p.life / p.maxLife, 0.f, 1.f) : 0.f;
+    g.posSize = glm::vec4(p.pos, p.size);
+    g.colorLife = glm::vec4(p.color, t);
+    particleGpu_.push_back(g);
+  }
+  vulkan_.uploadParticles(particleGpu_);
 }
 
 void Application::frameUpdate(float dt) {
@@ -249,9 +342,10 @@ void Application::frameUpdate(float dt) {
     }
   }
 
+  updateParticles(dt);
+
   runSpawnSystems(registry_, ctx_, dt);
   ctx_.elapsed = time_.elapsed;
-  (void)dt;
 }
 
 void Application::render() {
@@ -276,7 +370,23 @@ void Application::render() {
   // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
   ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
-  vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()));
+  // Bolt model: feet on ground, face yaw (mesh faces +Z; sprint forward is (sin,0,cos))
+  ObjectPush boltPush{};
+  const float groundY =
+      ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
+  glm::mat4 model(1.f);
+  model = glm::translate(model, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
+  model = glm::rotate(model, yaw, glm::vec3(0.f, 1.f, 0.f));
+  // Subtle sprint lean
+  if (ctx_.sprint.sprinting) {
+    model = glm::rotate(model, -0.12f * ctx_.sprint.momentum, glm::vec3(1.f, 0.f, 0.f));
+  }
+  model = glm::scale(model, glm::vec3(1.05f));
+  boltPush.model = model;
+  boltPush.color = glm::vec4(1.f, 1.f, 1.f, 0.2f + ctx_.sprint.momentum * 0.35f);
+
+  vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()), boltPush,
+                    static_cast<uint32_t>(particleGpu_.size()));
 }
 
 void Application::run() {
