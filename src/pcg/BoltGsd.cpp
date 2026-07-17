@@ -168,10 +168,10 @@ void buildBody(BoltPartMesh& m) {
 }
 
 void buildAura(BoltPartMesh& m) {
-  // Soft shell around torso for lightning aura
-  pushCapsule(m, {0.f, 0.92f, -0.6f}, {0.f, 0.98f, 0.55f}, 0.42f, 12, 6, AURA);
-  pushSphere(m, {0.f, 0.95f, 0.55f}, 0.50f, 12, 8, AURA, {1.05f, 1.1f, 1.15f});
-  pushSphere(m, {0.f, 0.90f, -0.55f}, 0.44f, 12, 8, AURA);
+  // Tight shell around torso (import scale ~2m dog)
+  pushCapsule(m, {0.f, 0.85f, -0.55f}, {0.f, 0.95f, 0.65f}, 0.38f, 12, 6, AURA);
+  pushSphere(m, {0.f, 0.95f, 0.55f}, 0.42f, 12, 8, AURA, {1.0f, 1.05f, 1.1f});
+  pushSphere(m, {0.f, 0.85f, -0.5f}, 0.38f, 12, 8, AURA);
 }
 
 void buildProcedural(BoltCharacterMeshes& out) {
@@ -282,9 +282,10 @@ void boltAnimTransforms(float phase, float speedFactor, float energy,
   }
 
   {
-    float pulse = 1.f + energy * 0.1f + std::sin(phase * kPi * 6.f) * 0.025f * energy;
+    float pulse = 1.f + energy * 0.06f + std::sin(phase * kPi * 6.f) * 0.015f * energy;
     glm::mat4 M = outLocal[static_cast<int>(BoltPart::Body)];
-    M = glm::scale(M, glm::vec3(pulse * 1.08f));
+    // Tight shell — large scale made dog look like a white tip in a bubble
+    M = glm::scale(M, glm::vec3(pulse * 1.05f));
     outLocal[static_cast<int>(BoltPart::Aura)] = M;
   }
 }

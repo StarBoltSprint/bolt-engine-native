@@ -367,15 +367,21 @@ void Application::frameUpdate(float dt) {
 }
 
 void Application::render() {
-  // Camera behind Bolt
+  // ¾ chase cam — side + back, lower height so full silhouette reads
   const float yaw = ctx_.sprint.yaw;
-  const glm::vec3 eye = ctx_.sprint.position +
-                        glm::vec3(-std::sin(yaw) * 12.f, 6.f, -std::cos(yaw) * 12.f);
-  const glm::vec3 target = ctx_.sprint.position + glm::vec3(0.f, 1.f, 0.f);
+  const float sy = std::sin(yaw), cy = std::cos(yaw);
+  // forward = (sy, 0, cy), right = (cy, 0, -sy)
+  const float camBack = boltFullMesh_ ? 6.5f : 8.f;
+  const float camSide = boltFullMesh_ ? 4.2f : 3.5f;
+  const float camH = boltFullMesh_ ? 2.6f : 3.5f;
+  const glm::vec3 forward(sy, 0.f, cy);
+  const glm::vec3 right(cy, 0.f, -sy);
+  const glm::vec3 eye = ctx_.sprint.position - forward * camBack + right * camSide +
+                        glm::vec3(0.f, camH, 0.f);
+  const glm::vec3 target = ctx_.sprint.position + forward * 1.8f + glm::vec3(0.f, 0.95f, 0.f);
   const float aspect = height_ > 0 ? width_ / static_cast<float>(height_) : 16.f / 9.f;
   glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0, 1, 0));
-  // Far plane past terrain half-size so horizon/fog owns the fade, not a hard clip
-  glm::mat4 proj = glm::perspective(glm::radians(60.f), aspect, 0.2f, 520.f);
+  glm::mat4 proj = glm::perspective(glm::radians(55.f), aspect, 0.15f, 520.f);
   proj[1][1] *= -1.f; // Vulkan Y flip
 
   const glm::mat4 viewProj = proj * view;
@@ -383,24 +389,21 @@ void Application::render() {
   ubo.viewProj = viewProj;
   ubo.invViewProj = glm::inverse(viewProj);
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
-  // y = material bitflags from loaded biome pack
   ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, vulkan_.materialFlags(), 0.f, 0.f);
-  // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
   ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
-  // Multi-part GSD: root transform + run-cycle locals
+  // Root transform — imported mesh normalized ~2m; extra scale for screen presence
   const float groundY =
       ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
   glm::mat4 root(1.f);
   root = glm::translate(root, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
   root = glm::rotate(root, yaw, glm::vec3(0.f, 1.f, 0.f));
-  // Imported mesh already normalized to ~1.35m height
-  root = glm::scale(root, glm::vec3(boltFullMesh_ ? 1.15f : 1.65f));
+  root = glm::scale(root, glm::vec3(boltFullMesh_ ? 1.85f : 1.65f));
 
   const float speedF = std::clamp(ctx_.sprint.speed / 28.f, 0.f, 1.4f);
-  const float energy = std::clamp(0.15f + ctx_.sprint.score * 0.55f + ctx_.sprint.momentum * 0.45f,
-                                  0.f, 1.4f);
-  // Phase advances faster when sprinting
+  // Milder aura energy so mesh is the star
+  const float energy = std::clamp(0.12f + ctx_.sprint.score * 0.4f + ctx_.sprint.momentum * 0.35f,
+                                  0.f, 1.1f);
   const float phase = std::fmod(static_cast<float>(time_.elapsed) * (1.2f + speedF * 3.5f), 1.f);
 
   std::array<glm::mat4, static_cast<int>(BoltPart::Count)> local{};
@@ -408,10 +411,15 @@ void Application::render() {
 
   std::array<ObjectPush, VulkanContext::kBoltPartCount> boltDraw{};
   for (int i = 0; i < VulkanContext::kBoltPartCount; ++i) {
-    boltDraw[static_cast<size_t>(i)].model = root * local[static_cast<size_t>(i)];
-    // Aura energy in .w — eyes also use this
+    glm::mat4 partLocal = local[static_cast<size_t>(i)];
+    // Full imported mesh: only body + aura; shrink aura so it doesn't swamp
+    if (boltFullMesh_ && i == static_cast<int>(BoltPart::Aura)) {
+      partLocal = local[static_cast<int>(BoltPart::Body)];
+      partLocal = glm::scale(partLocal, glm::vec3(1.12f));
+    }
+    boltDraw[static_cast<size_t>(i)].model = root * partLocal;
     float e = energy;
-    if (i == static_cast<int>(BoltPart::Aura)) e = energy; // shell intensity
+    if (i == static_cast<int>(BoltPart::Aura)) e *= 0.65f;
     boltDraw[static_cast<size_t>(i)].color = glm::vec4(1.f, 1.f, 1.f, e);
   }
 

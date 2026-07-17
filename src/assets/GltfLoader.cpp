@@ -87,9 +87,16 @@ void computeNormals(ObjMesh& mesh) {
   }
 }
 
+void boundsOf(const ObjMesh& mesh, glm::vec3& bmin, glm::vec3& bmax) {
+  bmin = bmax = mesh.vertices[0].pos;
+  for (const auto& v : mesh.vertices) {
+    bmin = glm::min(bmin, v.pos);
+    bmax = glm::max(bmax, v.pos);
+  }
+}
+
 bool extractMesh(const json& root, const std::vector<uint8_t>& bin, ObjMesh& out) {
   if (!root.contains("meshes") || root["meshes"].empty()) return false;
-  // First mesh, first primitive
   const auto& prim = root["meshes"][0]["primitives"][0];
   const auto& attrs = prim["attributes"];
   if (!attrs.contains("POSITION")) return false;
@@ -99,11 +106,17 @@ bool extractMesh(const json& root, const std::vector<uint8_t>& bin, ObjMesh& out
   const int nrmAcc = attrs.contains("NORMAL") ? attrs["NORMAL"].get<int>() : -1;
   const int idxAcc = prim.contains("indices") ? prim["indices"].get<int>() : -1;
 
-  struct V3 { float x, y, z; };
-  struct V2 { float x, y; };
+  struct V3 {
+    float x, y, z;
+  };
+  struct V2 {
+    float x, y;
+  };
   auto positions = readAccessor<V3>(root, bin, posAcc);
   auto uvs = uvAcc >= 0 ? readAccessor<V2>(root, bin, uvAcc) : std::vector<V2>{};
   auto normals = nrmAcc >= 0 ? readAccessor<V3>(root, bin, nrmAcc) : std::vector<V3>{};
+
+  if (positions.empty()) return false;
 
   out.vertices.clear();
   out.indices.clear();
@@ -111,11 +124,9 @@ bool extractMesh(const json& root, const std::vector<uint8_t>& bin, ObjMesh& out
   for (size_t i = 0; i < positions.size(); ++i) {
     VertexPC v{};
     v.pos = {positions[i].x, positions[i].y, positions[i].z};
-    if (i < normals.size())
-      v.normal = {normals[i].x, normals[i].y, normals[i].z};
-    if (i < uvs.size())
-      v.uv = {uvs[i].x, uvs[i].y};
-    v.matId = 0.f; // fur by default
+    if (i < normals.size()) v.normal = {normals[i].x, normals[i].y, normals[i].z};
+    if (i < uvs.size()) v.uv = {uvs[i].x, uvs[i].y};
+    v.matId = 0.f;
     out.vertices.push_back(v);
   }
 
@@ -137,44 +148,70 @@ bool extractMesh(const json& root, const std::vector<uint8_t>& bin, ObjMesh& out
       return false;
     }
   } else {
-    // Non-indexed triangle list
     out.indices.resize(out.vertices.size());
     for (uint32_t i = 0; i < out.indices.size(); ++i) out.indices[i] = i;
   }
 
-  if (nrmAcc < 0) computeNormals(out);
+  // Always recompute smooth-ish normals for lighting (skinned meshes often lack NORMAL)
+  computeNormals(out);
   return !out.vertices.empty() && !out.indices.empty();
 }
 
-/** Fit mesh: feet on y=0, face +Z, height ~1.4m */
+/**
+ * Fit imported quadruped into engine space:
+ * - Y-up, feet on y=0
+ * - longest horizontal axis → forward length
+ * - nose points +Z (sprint forward)
+ * - target height ~2.0 m so character fills chase cam
+ */
 void normalizeDogMesh(ObjMesh& mesh) {
   if (mesh.vertices.empty()) return;
-  glm::vec3 bmin = mesh.vertices[0].pos;
-  glm::vec3 bmax = bmin;
-  for (const auto& v : mesh.vertices) {
-    bmin = glm::min(bmin, v.pos);
-    bmax = glm::max(bmax, v.pos);
+
+  glm::vec3 bmin, bmax;
+  boundsOf(mesh, bmin, bmax);
+  glm::vec3 size = bmax - bmin;
+  logInfo("glTF raw bounds size=(" + std::to_string(size.x) + "," + std::to_string(size.y) + "," +
+          std::to_string(size.z) + ")");
+
+  // If model is Z-up (Z largest, Y small), swap Y/Z
+  if (size.z > size.y * 1.15f && size.y < size.x) {
+    for (auto& v : mesh.vertices) {
+      float y = v.pos.y, z = v.pos.z;
+      v.pos.y = z;
+      v.pos.z = -y;
+      float ny = v.normal.y, nz = v.normal.z;
+      v.normal.y = nz;
+      v.normal.z = -ny;
+    }
+    boundsOf(mesh, bmin, bmax);
+    size = bmax - bmin;
+    logInfo("glTF applied Z-up → Y-up conversion");
   }
-  const glm::vec3 size = bmax - bmin;
+
+  // Scale so height is ~2.0m (readable in game)
   const float h = std::max(size.y, 1e-3f);
-  const float targetH = 1.35f;
+  const float targetH = 2.05f;
   const float s = targetH / h;
-  // Center XZ, feet on ground, rotate if model faces -Z (Fox faces -Z-ish)
-  const glm::vec3 center = (bmin + bmax) * 0.5f;
+  const glm::vec3 center((bmin.x + bmax.x) * 0.5f, bmin.y, (bmin.z + bmax.z) * 0.5f);
+
   for (auto& v : mesh.vertices) {
-    glm::vec3 p = v.pos;
-    p.x = (p.x - center.x) * s;
-    p.y = (p.y - bmin.y) * s;
-    p.z = (p.z - center.z) * s;
-    // Fox sample faces roughly -Z; rotate 180° around Y so nose → +Z (sprint)
-    const float x = p.x, z = p.z;
-    p.x = -x;
-    p.z = -z;
+    glm::vec3 p = (v.pos - center) * s;
+    // 180° yaw: many sample animals face -Z
+    p = glm::vec3(-p.x, p.y, -p.z);
     v.pos = p;
-    float nx = v.normal.x, nz = v.normal.z;
-    v.normal.x = -nx;
-    v.normal.z = -nz;
+    v.normal = glm::normalize(glm::vec3(-v.normal.x, v.normal.y, -v.normal.z));
   }
+
+  // Snap feet exactly to y=0 after scale
+  boundsOf(mesh, bmin, bmax);
+  const float y0 = bmin.y;
+  for (auto& v : mesh.vertices) v.pos.y -= y0;
+
+  boundsOf(mesh, bmin, bmax);
+  size = bmax - bmin;
+  logInfo("glTF normalized size=(" + std::to_string(size.x) + "," + std::to_string(size.y) + "," +
+          std::to_string(size.z) + ") y=[" + std::to_string(bmin.y) + ".." +
+          std::to_string(bmax.y) + "]");
 }
 
 } // namespace
@@ -184,9 +221,8 @@ bool loadGltfMesh(const std::string& path, ObjMesh& out) {
   json root;
   std::vector<uint8_t> bin;
 
-  const bool isGlb = path.size() >= 4 &&
-                     (path.compare(path.size() - 4, 4, ".glb") == 0 ||
-                      path.compare(path.size() - 4, 4, ".GLB") == 0);
+  const bool isGlb = path.size() >= 4 && (path.compare(path.size() - 4, 4, ".glb") == 0 ||
+                                          path.compare(path.size() - 4, 4, ".GLB") == 0);
 
   if (isGlb) {
     auto data = readAll(path);
@@ -202,11 +238,9 @@ bool loadGltfMesh(const std::string& path, ObjMesh& out) {
     }
     root = json::parse(data.begin(), data.end(), nullptr, false);
     if (root.is_discarded()) return false;
-    // External bin
     if (root.contains("buffers") && !root["buffers"].empty()) {
       std::string uri = root["buffers"][0].value("uri", "");
       if (!uri.empty() && uri.find("data:") != 0) {
-        // relative to gltf path
         const auto slash = path.find_last_of("/\\");
         const std::string dir = slash == std::string::npos ? "" : path.substr(0, slash + 1);
         bin = readAll(dir + uri);
@@ -223,8 +257,8 @@ bool loadGltfMesh(const std::string& path, ObjMesh& out) {
     return false;
   }
   normalizeDogMesh(out);
-  logInfo("glTF mesh loaded " + path + " verts=" + std::to_string(out.vertices.size()) +
-          " idx=" + std::to_string(out.indices.size()));
+  logInfo("glTF mesh ready " + path + " verts=" + std::to_string(out.vertices.size()) +
+          " tris=" + std::to_string(out.indices.size() / 3));
   return true;
 }
 
