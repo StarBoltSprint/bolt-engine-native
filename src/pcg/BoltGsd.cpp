@@ -211,7 +211,16 @@ bool buildOrLoadBoltCharacter(BoltCharacterMeshes& out, const std::string& prefe
     else if (isObj) ok = loadObj(path, om, 0.f);
     if (!ok || om.vertices.empty()) return false;
 
-    // Full imported mesh as Body only
+    // Tag likely eye vertices (bright cyan materials lost on import — use position heuristic)
+    // After normalize: height ~2m, nose +Z; eyes sit high on head
+    for (auto& v : om.vertices) {
+      // head region: high Y, forward Z
+      if (v.pos.y > 1.35f && v.pos.z > 0.35f && std::abs(v.pos.x) > 0.06f &&
+          std::abs(v.pos.x) < 0.35f && v.pos.y < 1.85f) {
+        // small clusters on face sides → energy eyes
+        if (v.pos.z > 0.55f) v.matId = 1.f;
+      }
+    }
     out.parts[static_cast<int>(BoltPart::Body)].vertices = std::move(om.vertices);
     out.parts[static_cast<int>(BoltPart::Body)].indices = std::move(om.indices);
     // Keep aura shell for lightning (procedural)

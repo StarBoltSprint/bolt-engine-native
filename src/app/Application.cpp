@@ -439,7 +439,8 @@ void Application::render() {
   glm::mat4 root(1.f);
   root = glm::translate(root, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
   root = glm::rotate(root, yaw, glm::vec3(0.f, 1.f, 0.f));
-  root = glm::scale(root, glm::vec3(boltFullMesh_ ? 1.85f : 1.65f));
+  // Blender GSD is normalized ~2m; 1.55 keeps readable size without giant dog
+  root = glm::scale(root, glm::vec3(boltFullMesh_ ? 1.55f : 1.65f));
 
   const float speedF = std::clamp(ctx_.sprint.speed / 28.f, 0.f, 1.4f);
   // Milder aura energy so mesh is the star
