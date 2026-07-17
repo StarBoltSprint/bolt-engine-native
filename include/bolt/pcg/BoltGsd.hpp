@@ -25,14 +25,19 @@ struct BoltPartMesh {
 
 struct BoltCharacterMeshes {
   std::array<BoltPartMesh, static_cast<int>(BoltPart::Count)> parts;
+  /** True when a full imported mesh is used (no separate leg parts). */
+  bool fullMesh = false;
 };
 
 /**
- * Mid-poly procedural white GSD with clean cylindrical/planar UVs.
- * Faces +Z, feet near y=0. UV.xy = fur texture coords; matId on vertex.
- * If objPath exists, loads that instead (artist override).
+ * Load free/imported low-poly dog mesh if present, else procedural multi-part.
+ * Search order (first hit wins):
+ *   assets/characters/bolt/bolt_gsd.glb
+ *   assets/characters/bolt/bolt_gsd.obj
+ *   explicit path argument
+ * Full mesh → Body only + procedural Aura. Faces +Z, feet y=0.
  */
-bool buildOrLoadBoltCharacter(BoltCharacterMeshes& out, const std::string& objPath = "");
+bool buildOrLoadBoltCharacter(BoltCharacterMeshes& out, const std::string& preferPath = "");
 
 /** Write parts as a single OBJ (for editing / future re-import). */
 bool saveBoltCharacterObj(const BoltCharacterMeshes& meshes, const std::string& objPath);

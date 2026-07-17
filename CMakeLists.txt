@@ -73,6 +73,7 @@ add_library(bolt_engine
   src/assets/MaterialLibrary.cpp
   src/assets/TextureLoader.cpp
   src/assets/ObjLoader.cpp
+  src/assets/GltfLoader.cpp
   src/render/QualityTier.cpp
   src/render/RenderGraph.cpp
   src/render/VulkanContext.cpp

@@ -1,5 +1,6 @@
 #include "bolt/pcg/BoltGsd.hpp"
 #include "bolt/assets/ObjLoader.hpp"
+#include "bolt/assets/GltfLoader.hpp"
 #include "bolt/core/Log.hpp"
 #include <cmath>
 #include <filesystem>
@@ -192,22 +193,43 @@ void buildProcedural(BoltCharacterMeshes& out) {
 
 } // namespace
 
-bool buildOrLoadBoltCharacter(BoltCharacterMeshes& out, const std::string& objPath) {
-  // Prefer artist OBJ if present and complete — for now always procedural multi-part
-  // Single-file OBJ can replace body only later.
-  if (!objPath.empty() && std::filesystem::exists(objPath)) {
-    ObjMesh om;
-    if (loadObj(objPath, om, 0.f)) {
-      // Load as body only; keep procedural legs for animation
-      buildProcedural(out);
-      out.parts[static_cast<int>(BoltPart::Body)].vertices = std::move(om.vertices);
-      out.parts[static_cast<int>(BoltPart::Body)].indices = std::move(om.indices);
-      logInfo("Bolt body loaded from OBJ, legs/tail/aura procedural");
-      return true;
-    }
+bool buildOrLoadBoltCharacter(BoltCharacterMeshes& out, const std::string& preferPath) {
+  for (auto& p : out.parts) {
+    p.vertices.clear();
+    p.indices.clear();
   }
+  out.fullMesh = false;
+
+  auto tryLoadFull = [&](const std::string& path) -> bool {
+    if (path.empty() || !std::filesystem::exists(path)) return false;
+    ObjMesh om;
+    const bool isGltf = path.size() > 4 && (path.ends_with(".glb") || path.ends_with(".GLB") ||
+                                            path.ends_with(".gltf") || path.ends_with(".GLTF"));
+    const bool isObj = path.size() > 4 && (path.ends_with(".obj") || path.ends_with(".OBJ"));
+    bool ok = false;
+    if (isGltf) ok = loadGltfMesh(path, om);
+    else if (isObj) ok = loadObj(path, om, 0.f);
+    if (!ok || om.vertices.empty()) return false;
+
+    // Full imported mesh as Body only
+    out.parts[static_cast<int>(BoltPart::Body)].vertices = std::move(om.vertices);
+    out.parts[static_cast<int>(BoltPart::Body)].indices = std::move(om.indices);
+    // Keep aura shell for lightning (procedural)
+    buildAura(out.parts[static_cast<int>(BoltPart::Aura)]);
+    out.fullMesh = true;
+    logInfo("Bolt FULL mesh imported: " + path + " (+ aura shell)");
+    return true;
+  };
+
+  // Prefer explicit path, then standard asset locations
+  if (tryLoadFull(preferPath)) return true;
+  if (tryLoadFull("assets/characters/bolt/bolt_gsd.glb")) return true;
+  if (tryLoadFull("assets/characters/bolt/bolt_gsd.gltf")) return true;
+  if (tryLoadFull("assets/characters/bolt/bolt_gsd.obj")) return true;
+
   buildProcedural(out);
-  logInfo("Bolt GSD multi-part procedural character built");
+  out.fullMesh = false;
+  logInfo("Bolt multi-part procedural fallback (no bolt_gsd.glb/obj found)");
   return true;
 }
 
@@ -219,49 +241,50 @@ bool saveBoltCharacterObj(const BoltCharacterMeshes& meshes, const std::string& 
 
 void boltAnimTransforms(float phase, float speedFactor, float energy,
                         std::array<glm::mat4, static_cast<int>(BoltPart::Count)>& outLocal) {
-  const float sp = std::clamp(speedFactor, 0.f, 1.5f);
-  const float hop = sp > 0.08f ? 1.f : 0.15f;
-  // 4-keyframe-ish hop: use sin phase offsets per leg (diagonal gait)
-  auto legMat = [&](float x, float z, float phaseOff) {
-    float ph = phase * kPi * 2.f + phaseOff;
-    float swing = std::sin(ph) * 0.55f * hop;          // hip pitch
-    float lift = std::max(0.f, std::sin(ph)) * 0.14f * hop; // foot lift
-    float stride = std::cos(ph) * 0.08f * hop;
-    glm::mat4 M(1.f);
-    M = glm::translate(M, glm::vec3(x, 0.88f + lift, z + stride));
-    M = glm::rotate(M, swing * 0.65f, glm::vec3(1, 0, 0));
-    return M;
-  };
+  // Default identity for unused parts
+  for (auto& m : outLocal) m = glm::mat4(1.f);
 
-  outLocal[static_cast<int>(BoltPart::Body)] = glm::mat4(1.f);
-  // Subtle body bob
+  const float sp = std::clamp(speedFactor, 0.f, 1.5f);
+  const float hop = sp > 0.08f ? 1.f : 0.2f;
+  float bob = std::sin(phase * kPi * 2.f) * 0.04f * hop;
+  float lean = -0.1f * sp;
+  // Whole-body run bounce (works for full imported mesh + multi-part)
   {
-    float bob = std::sin(phase * kPi * 2.f) * 0.03f * hop;
-    float lean = -0.08f * sp;
     glm::mat4 M = glm::translate(glm::mat4(1.f), glm::vec3(0.f, bob, 0.f));
     M = glm::rotate(M, lean, glm::vec3(1, 0, 0));
+    // subtle stretch when sprinting
+    float stretch = 1.f + sp * 0.03f;
+    M = glm::scale(M, glm::vec3(1.f / stretch, stretch, stretch));
     outLocal[static_cast<int>(BoltPart::Body)] = M;
   }
 
+  auto legMat = [&](float x, float z, float phaseOff) {
+    float ph = phase * kPi * 2.f + phaseOff;
+    float swing = std::sin(ph) * 0.55f * hop;
+    float lift = std::max(0.f, std::sin(ph)) * 0.14f * hop;
+    float stride = std::cos(ph) * 0.08f * hop;
+    glm::mat4 M(1.f);
+    M = glm::translate(M, glm::vec3(x, 0.88f + lift + bob, z + stride));
+    M = glm::rotate(M, swing * 0.65f + lean, glm::vec3(1, 0, 0));
+    return M;
+  };
   outLocal[static_cast<int>(BoltPart::LegFL)] = legMat(0.20f, 0.32f, 0.f);
   outLocal[static_cast<int>(BoltPart::LegFR)] = legMat(-0.20f, 0.32f, kPi);
   outLocal[static_cast<int>(BoltPart::LegBL)] = legMat(0.22f, -0.42f, kPi);
   outLocal[static_cast<int>(BoltPart::LegBR)] = legMat(-0.22f, -0.42f, 0.f);
 
-  // Tail wag
   {
     float wag = std::sin(phase * kPi * 4.f) * 0.35f * (0.3f + sp);
-    glm::mat4 M = glm::translate(glm::mat4(1.f), glm::vec3(0.f, 1.0f, -0.72f));
+    glm::mat4 M = glm::translate(glm::mat4(1.f), glm::vec3(0.f, 1.0f + bob, -0.72f));
     M = glm::rotate(M, wag, glm::vec3(0, 1, 0));
     M = glm::rotate(M, 0.35f + sp * 0.2f, glm::vec3(1, 0, 0));
     outLocal[static_cast<int>(BoltPart::Tail)] = M;
   }
 
-  // Aura slightly larger, follows body bob
   {
-    float pulse = 1.f + energy * 0.08f + std::sin(phase * kPi * 6.f) * 0.02f * energy;
+    float pulse = 1.f + energy * 0.1f + std::sin(phase * kPi * 6.f) * 0.025f * energy;
     glm::mat4 M = outLocal[static_cast<int>(BoltPart::Body)];
-    M = glm::scale(M, glm::vec3(pulse));
+    M = glm::scale(M, glm::vec3(pulse * 1.08f));
     outLocal[static_cast<int>(BoltPart::Aura)] = M;
   }
 }

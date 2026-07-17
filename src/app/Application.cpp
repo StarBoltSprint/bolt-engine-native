@@ -148,14 +148,20 @@ void Application::createCrystalScene() {
   }
   {
     BoltCharacterMeshes ch;
-    // Prefer artist OBJ if present: assets/characters/bolt/bolt_gsd.obj
-    buildOrLoadBoltCharacter(ch, "assets/characters/bolt/bolt_gsd.obj");
-    saveBoltCharacterObj(ch, "assets/characters/bolt/bolt_gsd_generated.obj");
+    // Prefer free/imported low-poly mesh: bolt_gsd.glb / .obj (see ATTRIBUTION.txt)
+    buildOrLoadBoltCharacter(ch, "assets/characters/bolt/bolt_gsd.glb");
+    if (!ch.fullMesh) {
+      saveBoltCharacterObj(ch, "assets/characters/bolt/bolt_gsd_generated.obj");
+    }
     for (int i = 0; i < static_cast<int>(BoltPart::Count); ++i) {
       auto& p = ch.parts[static_cast<size_t>(i)];
       if (!p.vertices.empty()) vulkan_.uploadBoltPart(i, p.vertices, p.indices);
     }
-    logInfo("Bolt multi-part GSD uploaded (run cycle + aura shell)");
+    boltFullMesh_ = ch.fullMesh;
+    if (ch.fullMesh)
+      logInfo("Bolt imported low-poly mesh + aura (fullMesh mode)");
+    else
+      logInfo("Bolt multi-part procedural fallback");
   }
   {
     const bool ok = vulkan_.loadBoltFurPBR("assets/materials/bolt/bolt_fur");
@@ -388,7 +394,8 @@ void Application::render() {
   glm::mat4 root(1.f);
   root = glm::translate(root, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
   root = glm::rotate(root, yaw, glm::vec3(0.f, 1.f, 0.f));
-  root = glm::scale(root, glm::vec3(1.65f));
+  // Imported mesh already normalized to ~1.35m height
+  root = glm::scale(root, glm::vec3(boltFullMesh_ ? 1.15f : 1.65f));
 
   const float speedF = std::clamp(ctx_.sprint.speed / 28.f, 0.f, 1.4f);
   const float energy = std::clamp(0.15f + ctx_.sprint.score * 0.55f + ctx_.sprint.momentum * 0.45f,

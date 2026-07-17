@@ -50,6 +50,7 @@ private:
   float emitAccum_ = 0.f;
   float trailDistAccum_ = 0.f;
   glm::vec3 lastTrailPos_{0.f};
+  bool boltFullMesh_ = false;
   bool running_ = false;
   int width_ = 1280;
   int height_ = 720;
