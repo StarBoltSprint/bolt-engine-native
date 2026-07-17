@@ -4,7 +4,14 @@ High-performance **C++ / Vulkan / entt** engine for **StarBoltSprint**.
 
 > *Sprint shapes the world.* Meaningful Sprint Score drives procedural density, beauty, and chaos — starting with **Crystal Nebula Plains**.
 
-**Web prototype (reference):** [bolt-engine](../bolt-engine) · Play: https://starboltsprint.github.io/boltverse-threejs-game/
+## Two separate projects
+
+| Project | Stack | Play now? | Links |
+|---------|--------|-----------|--------|
+| **Three.js prototype** | Browser | **Yes — play in browser** | [Repo](https://github.com/StarBoltSprint/boltverse-threejs-game) · [Play](https://starboltsprint.github.io/boltverse-threejs-game/) |
+| **This repo (native)** | C++ / Vulkan | **Not a full game yet** — scaffold to build & run a window / systems | [This repo](https://github.com/StarBoltSprint/bolt-engine-native) |
+
+The web game stays as-is. This native repo does **not** replace the playable link until we finish rendering.
 
 ## Status
 
