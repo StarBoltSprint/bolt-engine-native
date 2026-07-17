@@ -74,8 +74,8 @@ void main() {
   else if (vKind > 0.5) col += vec3(0.35, 0.15, 0.5) * tip * 0.25;
 
   float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
-  float fog = smoothstep(50.0, 160.0, dist);
-  col = mix(col, vec3(0.02, 0.04, 0.09), fog * 0.8);
+  float fog = smoothstep(80.0, 340.0, dist);
+  col = mix(col, vec3(0.02, 0.04, 0.09), fog * 0.85);
 
   outColor = vec4(col, 1.0);
 }

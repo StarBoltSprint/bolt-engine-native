@@ -506,16 +506,15 @@ bool VulkanContext::createPipelines() {
   VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-  VkViewport vp{};
-  vp.width = static_cast<float>(swapExtent_.width);
-  vp.height = static_cast<float>(swapExtent_.height);
-  vp.maxDepth = 1.f;
-  VkRect2D sc{{0, 0}, swapExtent_};
+  // Dynamic viewport/scissor so maximize / fullscreen works without pipeline rebuild
   VkPipelineViewportStateCreateInfo vs{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
   vs.viewportCount = 1;
-  vs.pViewports = &vp;
   vs.scissorCount = 1;
-  vs.pScissors = &sc;
+
+  std::array<VkDynamicState, 2> dynStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dyn.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
+  dyn.pDynamicStates = dynStates.data();
 
   VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
   rs.polygonMode = VK_POLYGON_MODE_FILL;
@@ -553,6 +552,7 @@ bool VulkanContext::createPipelines() {
   gp.pMultisampleState = &ms;
   gp.pDepthStencilState = &ds;
   gp.pColorBlendState = &cb;
+  gp.pDynamicState = &dyn;
   gp.layout = pipelineLayout_;
   gp.renderPass = renderPass_;
   gp.subpass = 0;
@@ -1036,16 +1036,35 @@ void VulkanContext::resize(int w, int h) {
 }
 
 bool VulkanContext::recreateSwapchain() {
+  if (!window_) return false;
+  // Minimize → 0×0; wait until the window has a real size again
+  int w = 0, h = 0;
+  glfwGetFramebufferSize(window_, &w, &h);
+  while (w == 0 || h == 0) {
+    glfwWaitEvents();
+    if (!window_ || glfwWindowShouldClose(window_)) return false;
+    glfwGetFramebufferSize(window_, &w, &h);
+  }
+  width_ = w;
+  height_ = h;
+
   vkDeviceWaitIdle(device_);
   cleanupSwapchain();
   if (!createSwapchain()) return false;
   if (!createFramebuffers()) return false;
   framebufferResized_ = false;
+  logInfo("Swapchain recreated " + std::to_string(swapExtent_.width) + "x" +
+          std::to_string(swapExtent_.height));
   return true;
 }
 
 void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
-  if (device_ == VK_NULL_HANDLE) return;
+  if (device_ == VK_NULL_HANDLE || !valid_) return;
+  if (framebufferResized_) {
+    recreateSwapchain();
+  }
+  if (swapExtent_.width == 0 || swapExtent_.height == 0) return;
+
   vkWaitForFences(device_, 1, &inFlight_[frameIndex_], VK_TRUE, UINT64_MAX);
 
   uint32_t imageIndex = 0;
@@ -1053,6 +1072,11 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
                                        VK_NULL_HANDLE, &imageIndex);
   if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
     recreateSwapchain();
+    return;
+  }
+  if (acq == VK_SUBOPTIMAL_KHR) {
+    // still render this frame, recreate after present
+  } else if (acq != VK_SUCCESS) {
     return;
   }
   vkResetFences(device_, 1, &inFlight_[frameIndex_]);

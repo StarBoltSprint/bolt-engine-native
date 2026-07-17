@@ -29,6 +29,12 @@ bool Application::init() {
     auto* app = static_cast<Application*>(glfwGetWindowUserPointer(w));
     if (app) app->onResize(width, height);
   });
+  glfwSetKeyCallback(window_, [](GLFWwindow* w, int key, int /*scancode*/, int action, int /*mods*/) {
+    if (action != GLFW_PRESS) return;
+    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(w));
+    if (!app) return;
+    if (key == GLFW_KEY_F11 || key == GLFW_KEY_F) app->toggleFullscreen();
+  });
 
   materials_.setRoot("assets");
   materials_.scanAndLoad();
@@ -45,12 +51,56 @@ bool Application::init() {
 
   createCrystalScene();
   running_ = true;
-  logInfo("Application ready — Crystal Nebula (WASD move, Shift sprint, Esc quit)");
+  logInfo("Application ready — Crystal Nebula (WASD move, Shift sprint, F11 fullscreen, Esc quit)");
   return true;
 }
 
 void Application::onResize(int w, int h) {
-  if (w > 0 && h > 0) vulkan_.resize(w, h);
+  if (w > 0 && h > 0) {
+    width_ = w;
+    height_ = h;
+    vulkan_.resize(w, h);
+  }
+}
+
+void Application::toggleFullscreen() {
+  if (!window_) return;
+  GLFWmonitor* mon = glfwGetPrimaryMonitor();
+  if (!mon) return;
+  const GLFWvidmode* mode = glfwGetVideoMode(mon);
+  if (!mode) return;
+
+  if (!fullscreen_) {
+    glfwGetWindowPos(window_, &windowedX_, &windowedY_);
+    glfwGetWindowSize(window_, &windowedW_, &windowedH_);
+    glfwSetWindowMonitor(window_, mon, 0, 0, mode->width, mode->height, mode->refreshRate);
+    fullscreen_ = true;
+    logInfo("Fullscreen " + std::to_string(mode->width) + "x" + std::to_string(mode->height));
+  } else {
+    glfwSetWindowMonitor(window_, nullptr, windowedX_, windowedY_, windowedW_, windowedH_, 0);
+    fullscreen_ = false;
+    logInfo("Windowed " + std::to_string(windowedW_) + "x" + std::to_string(windowedH_));
+  }
+  // Swapchain rebuild is driven by framebuffer size callback + framebufferResized_
+}
+
+void Application::rebuildTerrainAroundPlayer(bool force) {
+  const float px = ctx_.sprint.position.x;
+  const float pz = ctx_.sprint.position.z;
+  const float half = terrainSize_ * 0.5f;
+  // Rebuild before player walks off the patch (keep ~30% margin)
+  const float margin = terrainSize_ * 0.30f;
+  const float dx = std::abs(px - terrainOriginX_);
+  const float dz = std::abs(pz - terrainOriginZ_);
+  if (!force && dx < half - margin && dz < half - margin) return;
+
+  terrainOriginX_ = px;
+  terrainOriginZ_ = pz;
+  auto cpu = buildTerrainMesh(ctx_.height, terrainSegs_, terrainSize_, terrainOriginX_,
+                              terrainOriginZ_, ctx_.sprint.score);
+  vulkan_.uploadTerrain(cpu.vertices, cpu.indices);
+  logInfo("Terrain recentered at (" + std::to_string(static_cast<int>(px)) + ", " +
+          std::to_string(static_cast<int>(pz)) + ") size=" + std::to_string(static_cast<int>(terrainSize_)));
 }
 
 void Application::createCrystalScene() {
@@ -61,12 +111,13 @@ void Application::createCrystalScene() {
   registry_.emplace<BoltAura>(player);
   registry_.emplace<NameComponent>(player, "Bolt");
 
-  // Terrain from HeightField
+  // Large streaming terrain patch (follows Bolt — was 200m fixed at origin)
   const auto q = qualitySettings(ctx_.quality);
-  // Higher segs for smoother hills when quality allows
-  const int segs = std::max(q.terrainSegs, 48);
-  auto cpuTerrain = buildTerrainMesh(ctx_.height, segs, 200.f, 0.f, 0.f, 0.45f);
-  vulkan_.uploadTerrain(cpuTerrain.vertices, cpuTerrain.indices);
+  terrainSegs_ = std::max(q.terrainSegs, 64);
+  terrainSize_ = 640.f;
+  terrainOriginX_ = 0.f;
+  terrainOriginZ_ = 0.f;
+  rebuildTerrainAroundPlayer(true);
 
   // Crystal biome multi-material pack (ground / rock / path / stalk)
   {
@@ -175,6 +226,9 @@ void Application::fixedUpdate(float dt) {
 void Application::frameUpdate(float dt) {
   materials_.pollHotReload();
 
+  // Keep ground under Bolt / camera — foliage already streams, terrain must too
+  rebuildTerrainAroundPlayer(false);
+
   // Stream more foliage ahead while sprinting
   if (ctx_.sprint.sprinting && foliageCpu_.size() < 4000) {
     auto fresh = ctx_.vegetation.generate(ctx_.sprint, ctx_.rules, ctx_.height, ctx_.budgets,
@@ -208,7 +262,8 @@ void Application::render() {
   const glm::vec3 target = ctx_.sprint.position + glm::vec3(0.f, 1.f, 0.f);
   const float aspect = height_ > 0 ? width_ / static_cast<float>(height_) : 16.f / 9.f;
   glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0, 1, 0));
-  glm::mat4 proj = glm::perspective(glm::radians(58.f), aspect, 0.15f, 280.f);
+  // Far plane past terrain half-size so horizon/fog owns the fade, not a hard clip
+  glm::mat4 proj = glm::perspective(glm::radians(58.f), aspect, 0.2f, 520.f);
   proj[1][1] *= -1.f; // Vulkan Y flip
 
   FrameUBO ubo{};

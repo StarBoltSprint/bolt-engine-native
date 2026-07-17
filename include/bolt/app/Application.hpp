@@ -18,9 +18,11 @@ public:
   void run();
   void shutdown();
   void onResize(int w, int h);
+  void toggleFullscreen();
 
 private:
   void createCrystalScene();
+  void rebuildTerrainAroundPlayer(bool force);
   void fixedUpdate(float dt);
   void frameUpdate(float dt);
   void render();
@@ -36,6 +38,17 @@ private:
   bool running_ = false;
   int width_ = 1280;
   int height_ = 720;
+
+  // Streaming terrain patch (follows Bolt so ground never “ends”)
+  float terrainOriginX_ = 0.f;
+  float terrainOriginZ_ = 0.f;
+  float terrainSize_ = 640.f;
+  int terrainSegs_ = 72;
+  bool fullscreen_ = false;
+  int windowedX_ = 100;
+  int windowedY_ = 100;
+  int windowedW_ = 1280;
+  int windowedH_ = 720;
 };
 
 } // namespace bolt

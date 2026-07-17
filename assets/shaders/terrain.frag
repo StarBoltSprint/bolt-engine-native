@@ -177,9 +177,10 @@ void main() {
   col += vec3(0.1, 0.35, 0.5) * 0.08 * smoothstep(2.5, 8.0, vHeight);
 
   float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
-  float fog = smoothstep(40.0, 180.0, dist);
+  // Softer, farther fog so the patch edge is less of a hard “wall”
+  float fog = smoothstep(70.0, 340.0, dist);
   vec3 sky = vec3(0.02, 0.04, 0.09);
-  col = mix(col, sky, fog * 0.85);
+  col = mix(col, sky, fog * 0.9);
 
   col = pow(max(col, 0.0), vec3(0.95));
   outColor = vec4(col, 1.0);
