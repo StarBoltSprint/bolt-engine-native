@@ -1,10 +1,8 @@
-﻿Bolt mesh source (interim low-poly quadruped import):
-- File: bolt_gsd.glb (from Khronos glTF Sample Assets "Fox")
-- Original: Low Poly Fox by PixelMannen (OpenGameArt)
-- Animated/adapted by tomkranis / AsoboStudio / scurest for glTF samples
-- License: CC-BY 4.0 — attribution required
-- https://opengameart.org/content/fox-and-shiba
-- https://github.com/KhronosGroup/glTF-Sample-Assets (Models/Fox)
+﻿Bolt character mesh (Blender-authored)
+--------------------------------------
+- bolt_gsd.glb / bolt_gsd.blend — created with tools/blender_make_bolt.py (portable Blender 4.2 LTS)
+- White German Shepherd-style low-poly hero for StarBoltSprint / Bolt Engine
+- Materials: fur, bright fur, nose, cyan energy eyes, ear inner, pads
+- Fur PBR at runtime: assets/materials/bolt/bolt_fur_* (Grok Imagine pipeline)
 
-Engine applies pure-white fur PBR (Grok Imagine) + cyan energy styling as Bolt.
-Replace this file with a true German Shepherd glTF/OBJ named bolt_gsd.glb or bolt_gsd.obj anytime.
+Previous interim mesh (fox) kept as bolt_gsd.glb.fox_backup if present.

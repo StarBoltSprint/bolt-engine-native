@@ -10,3 +10,7 @@ third_party/entt/
 assets/grok_inbox/*.png
 assets/grok_inbox/*.jpg
 !assets/grok_inbox/README.txt
+
+tools/blender-portable/
+*.zip
+

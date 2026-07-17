@@ -1,29 +1,30 @@
-# StarBoltSprint — White German Shepherd / quadruped
+# StarBoltSprint — Bolt (Blender character)
 
-## Pipeline (same as crystal terrain)
+## Portable Blender = full Blender
 
-| Step | Bolt |
-|------|------|
-| **Geometry** | **Imported low-poly mesh** (`bolt_gsd.glb` / `.obj`) preferred; procedural multi-part fallback |
-| **Imagine** | Seamless pure-white fur → `bolt_fur_*` PBR |
-| **Vulkan** | UV + triplanar fur on mesh; lightning aura shell |
-| **Animation** | Body bob / lean / stretch; multi-part leg hop if procedural |
+The zip under `tools/blender-portable/` is the **same Blender** as the installer — no admin, no worse quality.
 
-## Default imported mesh
+## Build Bolt mesh
 
-`bolt_gsd.glb` — free **CC-BY 4.0** low-poly fox (PixelMannen / Khronos sample), restyled with white fur PBR as Bolt stand-in.
-
-See `ATTRIBUTION.txt`. Swap anytime with a real German Shepherd:
-
-```
-assets/characters/bolt/bolt_gsd.glb   # or .obj / .gltf
+```powershell
+$blender = "tools\blender-portable\blender-4.2.16-windows-x64\blender.exe"
+& $blender --background --python tools\blender_make_bolt.py -- assets\characters\bolt\bolt_gsd.glb
 ```
 
-Loader auto-fits: feet on ground, nose toward +Z, height ~1.35 m.
+Outputs:
+- `bolt_gsd.glb` — runtime mesh (engine loads this)
+- `bolt_gsd.blend` — re-open in Blender to edit
 
-## Runtime
+## Engine pipeline
 
-- Fur PBR from Grok import  
-- Sprint bob + aura intensity from score/momentum  
-- Dust trail particles  
+1. Blender models low-poly white GSD-style dog + UVs + materials  
+2. Export glTF 2.0 (`.glb`)  
+3. Engine `loadGltfMesh` → normalize size/feet/+Z  
+4. Runtime white fur PBR: `assets/materials/bolt/bolt_fur_*`  
+5. Aura + orbit camera in Vulkan  
 
+## Controls
+
+- **RMB drag** — orbit camera  
+- **Scroll / +/-** — zoom  
+- **WASD + Shift** — move / sprint  
