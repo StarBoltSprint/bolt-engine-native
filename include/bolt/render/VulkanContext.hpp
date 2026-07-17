@@ -21,6 +21,7 @@ struct FrameUBO {
   glm::vec4 sprintScore_flags;
   // x = triplanar tiling, y = path half-width, z = path edge falloff, w = path meander amp
   glm::vec4 tiling_pad;
+  glm::mat4 invViewProj;        // sky ray reconstruction
 };
 
 /** Material bitflags for FrameUBO::sprintScore_flags.y */
@@ -134,6 +135,7 @@ private:
 
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
   VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+  VkPipeline skyPipeline_ = VK_NULL_HANDLE;
   VkPipeline terrainPipeline_ = VK_NULL_HANDLE;
   VkPipeline foliagePipeline_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;

@@ -30,7 +30,9 @@ $pairs = @(
   @("terrain.vert", "terrain.vert.spv"),
   @("terrain.frag", "terrain.frag.spv"),
   @("foliage.vert", "foliage.vert.spv"),
-  @("foliage.frag", "foliage.frag.spv")
+  @("foliage.frag", "foliage.frag.spv"),
+  @("sky.vert", "sky.vert.spv"),
+  @("sky.frag", "sky.frag.spv")
 )
 foreach ($p in $pairs) {
   $in = Join-Path $shaderDir $p[0]

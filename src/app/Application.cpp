@@ -263,16 +263,18 @@ void Application::render() {
   const float aspect = height_ > 0 ? width_ / static_cast<float>(height_) : 16.f / 9.f;
   glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0, 1, 0));
   // Far plane past terrain half-size so horizon/fog owns the fade, not a hard clip
-  glm::mat4 proj = glm::perspective(glm::radians(58.f), aspect, 0.2f, 520.f);
+  glm::mat4 proj = glm::perspective(glm::radians(60.f), aspect, 0.2f, 520.f);
   proj[1][1] *= -1.f; // Vulkan Y flip
 
+  const glm::mat4 viewProj = proj * view;
   FrameUBO ubo{};
-  ubo.viewProj = proj * view;
+  ubo.viewProj = viewProj;
+  ubo.invViewProj = glm::inverse(viewProj);
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
   // y = material bitflags from loaded biome pack
   ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, vulkan_.materialFlags(), 0.f, 0.f);
   // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
-  ubo.tiling_pad = glm::vec4(0.035f, 5.5f, 3.2f, 4.0f);
+  ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
   vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()));
 }

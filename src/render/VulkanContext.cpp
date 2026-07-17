@@ -68,6 +68,7 @@ void VulkanContext::shutdown() {
   uniformMapped_.clear();
   if (descPool_) vkDestroyDescriptorPool(device_, descPool_, nullptr);
   if (descLayout_) vkDestroyDescriptorSetLayout(device_, descLayout_, nullptr);
+  if (skyPipeline_) vkDestroyPipeline(device_, skyPipeline_, nullptr);
   if (terrainPipeline_) vkDestroyPipeline(device_, terrainPipeline_, nullptr);
   if (foliagePipeline_) vkDestroyPipeline(device_, foliagePipeline_, nullptr);
   if (pipelineLayout_) vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
@@ -467,11 +468,15 @@ bool VulkanContext::createPipelines() {
   VkShaderModule frag = loadShaderModule("assets/shaders/terrain.frag.spv");
   VkShaderModule fvert = loadShaderModule("assets/shaders/foliage.vert.spv");
   VkShaderModule ffrag = loadShaderModule("assets/shaders/foliage.frag.spv");
+  VkShaderModule svert = loadShaderModule("assets/shaders/sky.vert.spv");
+  VkShaderModule sfrag = loadShaderModule("assets/shaders/sky.frag.spv");
   if (!vert || !frag) {
     if (vert) vkDestroyShaderModule(device_, vert, nullptr);
     if (frag) vkDestroyShaderModule(device_, frag, nullptr);
     if (fvert) vkDestroyShaderModule(device_, fvert, nullptr);
     if (ffrag) vkDestroyShaderModule(device_, ffrag, nullptr);
+    if (svert) vkDestroyShaderModule(device_, svert, nullptr);
+    if (sfrag) vkDestroyShaderModule(device_, sfrag, nullptr);
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &descLayout_;
@@ -503,10 +508,11 @@ bool VulkanContext::createPipelines() {
   vi.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
   vi.pVertexAttributeDescriptions = attrs.data();
 
+  VkPipelineVertexInputStateCreateInfo viEmpty{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
   VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-  // Dynamic viewport/scissor so maximize / fullscreen works without pipeline rebuild
   VkPipelineViewportStateCreateInfo vs{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
   vs.viewportCount = 1;
   vs.scissorCount = 1;
@@ -529,6 +535,10 @@ bool VulkanContext::createPipelines() {
   ds.depthTestEnable = VK_TRUE;
   ds.depthWriteEnable = VK_TRUE;
   ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
+  VkPipelineDepthStencilStateCreateInfo dsSky{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  dsSky.depthTestEnable = VK_FALSE;
+  dsSky.depthWriteEnable = VK_FALSE;
 
   VkPipelineColorBlendAttachmentState blendAtt{};
   blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -561,7 +571,6 @@ bool VulkanContext::createPipelines() {
     logError("terrain pipeline failed");
   }
 
-  // Foliage pipeline: instance via storage buffer (gl_InstanceIndex)
   if (fvert && ffrag) {
     stages[0].module = fvert;
     stages[1].module = ffrag;
@@ -571,10 +580,27 @@ bool VulkanContext::createPipelines() {
     }
   }
 
+  // Sky: fullscreen triangle, no depth, no vertex buffer
+  if (svert && sfrag) {
+    stages[0].module = svert;
+    stages[1].module = sfrag;
+    gp.pVertexInputState = &viEmpty;
+    gp.pDepthStencilState = &dsSky;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    gp.pRasterizationState = &rs;
+    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gp, nullptr, &skyPipeline_) !=
+        VK_SUCCESS) {
+      logWarn("sky pipeline failed");
+    }
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+  }
+
   vkDestroyShaderModule(device_, vert, nullptr);
   vkDestroyShaderModule(device_, frag, nullptr);
   if (fvert) vkDestroyShaderModule(device_, fvert, nullptr);
   if (ffrag) vkDestroyShaderModule(device_, ffrag, nullptr);
+  if (svert) vkDestroyShaderModule(device_, svert, nullptr);
+  if (sfrag) vkDestroyShaderModule(device_, sfrag, nullptr);
   return terrainPipeline_ != VK_NULL_HANDLE;
 }
 
@@ -1089,7 +1115,7 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
   vkBeginCommandBuffer(cmd, &bi);
 
   VkClearValue clears[2]{};
-  // Deep crystal nebula sky
+  // Clear is overwritten by sky pass; keep deep fallback
   clears[0].color = {{0.015f, 0.03f, 0.08f, 1.f}};
   clears[1].depthStencil = {1.f, 0};
   VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -1110,6 +1136,12 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
                           &descSets_[frameIndex_], 0, nullptr);
+
+  // Sky first (no depth write)
+  if (skyPipeline_) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
 
   if (terrainPipeline_ && terrain_.indexCount > 0) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrainPipeline_);

@@ -8,7 +8,7 @@ void buildStalkMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outI
   outIndices.clear();
 
   // Multi-tier crystal spear (base flare → mid waist → sharp tip)
-  const int sides = 8;
+  const int sides = 10;
   auto push = [&](glm::vec3 p, glm::vec3 n, glm::vec2 uv) {
     outVerts.push_back({p, glm::normalize(n), uv});
   };
