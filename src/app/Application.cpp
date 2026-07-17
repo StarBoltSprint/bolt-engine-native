@@ -4,6 +4,9 @@
 #include "bolt/pcg/StalkMesh.hpp"
 #include "bolt/pcg/MeshPrimitives.hpp"
 #include "bolt/pcg/BoltGsd.hpp"
+#include "bolt/pcg/PropMeshes.hpp"
+#include "bolt/pcg/PathRibbon.hpp"
+#include "bolt/pcg/StalkMesh.hpp"
 #include "bolt/core/Log.hpp"
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -98,22 +101,105 @@ void Application::toggleFullscreen() {
 }
 
 void Application::rebuildTerrainAroundPlayer(bool force) {
-  const float px = ctx_.sprint.position.x;
-  const float pz = ctx_.sprint.position.z;
+  float ox = 0.f, oz = 0.f;
+  streamer_.terrainOrigin(ctx_.sprint.position.x, ctx_.sprint.position.z, ox, oz);
   const float half = terrainSize_ * 0.5f;
-  // Rebuild before player walks off the patch (keep ~30% margin)
-  const float margin = terrainSize_ * 0.30f;
-  const float dx = std::abs(px - terrainOriginX_);
-  const float dz = std::abs(pz - terrainOriginZ_);
-  if (!force && dx < half - margin && dz < half - margin) return;
+  const float margin = terrainSize_ * 0.28f;
+  const float dx = std::abs(ctx_.sprint.position.x - terrainOriginX_);
+  const float dz = std::abs(ctx_.sprint.position.z - terrainOriginZ_);
+  // Snap to chunk grid; rebuild when player leaves margin
+  if (!force && dx < half - margin && dz < half - margin &&
+      std::abs(ox - terrainOriginX_) < 1.f && std::abs(oz - terrainOriginZ_) < 1.f)
+    return;
 
-  terrainOriginX_ = px;
-  terrainOriginZ_ = pz;
+  terrainOriginX_ = ox;
+  terrainOriginZ_ = oz;
   auto cpu = buildTerrainMesh(ctx_.height, terrainSegs_, terrainSize_, terrainOriginX_,
                               terrainOriginZ_, ctx_.sprint.score);
   vulkan_.uploadTerrain(cpu.vertices, cpu.indices);
-  logInfo("Terrain recentered at (" + std::to_string(static_cast<int>(px)) + ", " +
-          std::to_string(static_cast<int>(pz)) + ") size=" + std::to_string(static_cast<int>(terrainSize_)));
+  logInfo("Terrain chunk-origin (" + std::to_string(static_cast<int>(ox)) + ", " +
+          std::to_string(static_cast<int>(oz)) + ") chunks=" +
+          std::to_string(streamer_.loadedChunkCount()));
+}
+
+void Application::rebuildPathRibbon() {
+  const float len = 52.f + ctx_.sprint.score * 36.f;
+  auto pts = ctx_.paths.generate(ctx_.sprint, ctx_.height, len, 28);
+  const float hw = ctx_.paths.ribbonHalfWidth(ctx_.sprint.score);
+  auto ribbon = buildPathRibbon(pts, hw, ctx_.height, ctx_.sprint.score);
+  vulkan_.uploadPathMesh(ribbon.vertices, ribbon.indices);
+}
+
+void Application::packAndUploadInstances() {
+  std::vector<FoliageInstance> foliage, details;
+  std::vector<RuinInstance> ruins;
+  streamer_.gatherFoliage(foliage);
+  streamer_.gatherDetails(details);
+  streamer_.gatherRuins(ruins);
+
+  std::vector<FoliageInstanceGPU> stalk, bush, tall, det, rui;
+  auto push = [](std::vector<FoliageInstanceGPU>& dst, const glm::vec3& p, float sc, float yaw,
+                 float kind) {
+    FoliageInstanceGPU g;
+    g.posScale = glm::vec4(p, sc);
+    g.yawKind = glm::vec4(yaw, kind, 0.f, 0.f);
+    dst.push_back(g);
+  };
+
+  for (const auto& f : foliage) {
+    if (f.kind == 3u)
+      push(bush, f.position, f.scale, f.yaw, static_cast<float>(f.kind));
+    else if (f.kind == 4u)
+      push(tall, f.position, f.scale * 1.15f, f.yaw, static_cast<float>(f.kind));
+    else
+      push(stalk, f.position, f.scale, f.yaw, static_cast<float>(f.kind));
+  }
+  for (const auto& d : details)
+    push(det, d.position, d.scale, d.yaw, static_cast<float>(d.kind));
+  for (const auto& r : ruins)
+    push(rui, r.position, r.scale, r.yaw, static_cast<float>(r.kind));
+
+  // Soft caps for GPU
+  auto cap = [](std::vector<FoliageInstanceGPU>& v, size_t n) {
+    if (v.size() > n) v.resize(n);
+  };
+  cap(stalk, 2800);
+  cap(bush, 800);
+  cap(tall, 600);
+  cap(det, 1500);
+  cap(rui, 120);
+
+  packedInstances_.clear();
+  instCounts_ = {};
+  instCounts_.stalkFirst = 0;
+  instCounts_.stalkCount = static_cast<uint32_t>(stalk.size());
+  packedInstances_.insert(packedInstances_.end(), stalk.begin(), stalk.end());
+
+  instCounts_.bushFirst = static_cast<uint32_t>(packedInstances_.size());
+  instCounts_.bushCount = static_cast<uint32_t>(bush.size());
+  packedInstances_.insert(packedInstances_.end(), bush.begin(), bush.end());
+
+  instCounts_.tallFirst = static_cast<uint32_t>(packedInstances_.size());
+  instCounts_.tallCount = static_cast<uint32_t>(tall.size());
+  packedInstances_.insert(packedInstances_.end(), tall.begin(), tall.end());
+
+  instCounts_.detailFirst = static_cast<uint32_t>(packedInstances_.size());
+  instCounts_.detailCount = static_cast<uint32_t>(det.size());
+  packedInstances_.insert(packedInstances_.end(), det.begin(), det.end());
+
+  instCounts_.ruinFirst = static_cast<uint32_t>(packedInstances_.size());
+  instCounts_.ruinCount = static_cast<uint32_t>(rui.size());
+  packedInstances_.insert(packedInstances_.end(), rui.begin(), rui.end());
+
+  vulkan_.uploadFoliage(packedInstances_);
+}
+
+void Application::refreshWorldStreaming() {
+  streamer_.chunkSize = 72.f;
+  streamer_.loadRadius = 2;
+  streamer_.update(ctx_.sprint, ctx_.rules, ctx_.height, ctx_.budgets, ctx_.vegetation,
+                   detailSpawner_, ruinGenerator_);
+  packAndUploadInstances();
 }
 
 void Application::createCrystalScene() {
@@ -124,10 +210,10 @@ void Application::createCrystalScene() {
   registry_.emplace<BoltAura>(player);
   registry_.emplace<NameComponent>(player, "Bolt");
 
-  // Large streaming terrain patch (follows Bolt — was 200m fixed at origin)
+  // Chunk-streamed terrain (6×72m ≈ covers loadRadius 2 neighborhood)
   const auto q = qualitySettings(ctx_.quality);
   terrainSegs_ = std::max(q.terrainSegs, 64);
-  terrainSize_ = 640.f;
+  terrainSize_ = streamer_.chunkSize * static_cast<float>(streamer_.loadRadius * 2 + 2);
   terrainOriginX_ = 0.f;
   terrainOriginZ_ = 0.f;
   rebuildTerrainAroundPlayer(true);
@@ -142,11 +228,21 @@ void Application::createCrystalScene() {
     else logWarn("No crystal biome PBR maps — procedural. Run: scripts/run_grok_pipeline.ps1");
   }
 
-  // Stalk mesh for instances
-  std::vector<VertexPC> stalkV;
-  std::vector<uint32_t> stalkI;
-  buildStalkMesh(stalkV, stalkI);
-  vulkan_.uploadStalkMesh(stalkV, stalkI);
+  // PCG meshes: stalks, bushes, tall crystals, detail shards, ruin pillars
+  {
+    std::vector<VertexPC> v;
+    std::vector<uint32_t> i;
+    buildStalkMesh(v, i);
+    vulkan_.uploadStalkMesh(v, i);
+    buildBushMesh(v, i);
+    vulkan_.uploadBushMesh(v, i);
+    buildTallCrystalMesh(v, i);
+    vulkan_.uploadTallMesh(v, i);
+    buildDetailShardMesh(v, i);
+    vulkan_.uploadDetailMesh(v, i);
+    buildRuinPillarMesh(v, i);
+    vulkan_.uploadRuinMesh(v, i);
+  }
 
   // Soft shadow blob + multi-part GSD (body/legs/tail/aura) + fur PBR
   {
@@ -178,7 +274,7 @@ void Application::createCrystalScene() {
     else logWarn("Bolt fur PBR missing under assets/materials/bolt/");
   }
 
-  // Initial foliage batch around spawn
+  // Seed world streamer + path ribbon + instances
   ctx_.sprint.position = glm::vec3(0.f, 2.f, 0.f);
   lastTrailPos_ = ctx_.sprint.position;
   ctx_.sprint.yaw = 0.f;
@@ -186,33 +282,21 @@ void Application::createCrystalScene() {
   ctx_.sprint.sprinting = true;
   ctx_.budgets.applySprint(ctx_.sprint);
 
-  auto initial = ctx_.vegetation.generate(ctx_.sprint, ctx_.rules, ctx_.height, ctx_.budgets, 48);
-  // Seed more rings for first look
-  for (int k = 0; k < 4; ++k) {
-    ctx_.sprint.position.z += 20.f;
-    auto more = ctx_.vegetation.generate(ctx_.sprint, ctx_.rules, ctx_.height, ctx_.budgets, 32);
-    initial.insert(initial.end(), more.begin(), more.end());
-  }
-  ctx_.sprint.position = glm::vec3(0.f, 2.f, 0.f);
-
-  foliageCpu_.clear();
-  foliageCpu_.reserve(initial.size());
-  for (auto& inst : initial) {
-    FoliageInstanceGPU g;
-    g.posScale = glm::vec4(inst.position, inst.scale);
-    g.yawKind = glm::vec4(inst.yaw, static_cast<float>(inst.kind), 0.f, 0.f);
-    foliageCpu_.push_back(g);
-  }
-  vulkan_.uploadFoliage(foliageCpu_);
+  refreshWorldStreaming();
+  rebuildPathRibbon();
 
   auto batch = registry_.create();
   FoliageBatch fb;
-  fb.instanceCount = static_cast<uint32_t>(foliageCpu_.size());
+  fb.instanceCount = instCounts_.stalkCount + instCounts_.bushCount + instCounts_.tallCount;
   registry_.emplace<FoliageBatch>(batch, fb);
   registry_.emplace<NameComponent>(batch, "CrystalFoliageBatch");
 
-  logInfo("Crystal scene: terrain segs=" + std::to_string(q.terrainSegs) +
-          " foliage=" + std::to_string(foliageCpu_.size()));
+  logInfo("Crystal scene: chunks=" + std::to_string(streamer_.loadedChunkCount()) +
+          " stalk=" + std::to_string(instCounts_.stalkCount) +
+          " bush=" + std::to_string(instCounts_.bushCount) +
+          " tall=" + std::to_string(instCounts_.tallCount) +
+          " detail=" + std::to_string(instCounts_.detailCount) +
+          " ruins=" + std::to_string(instCounts_.ruinCount));
 }
 
 void Application::fixedUpdate(float dt) {
@@ -377,26 +461,15 @@ void Application::updateParticles(float dt) {
 void Application::frameUpdate(float dt) {
   materials_.pollHotReload();
 
-  // Keep ground under Bolt / camera — foliage already streams, terrain must too
+  // Chunk streaming + terrain patch + path ribbon
   rebuildTerrainAroundPlayer(false);
+  refreshWorldStreaming();
 
-  // Stream more foliage ahead while sprinting
-  if (ctx_.sprint.sprinting && foliageCpu_.size() < 4000) {
-    auto fresh = ctx_.vegetation.generate(ctx_.sprint, ctx_.rules, ctx_.height, ctx_.budgets,
-                                          ctx_.budgets.vegSpawnsPerTick * 4);
-    for (auto& inst : fresh) {
-      FoliageInstanceGPU g;
-      g.posScale = glm::vec4(inst.position, inst.scale);
-      g.yawKind = glm::vec4(inst.yaw, static_cast<float>(inst.kind), 0.f, 0.f);
-      foliageCpu_.push_back(g);
-    }
-    if (!fresh.empty()) {
-      // Cap total
-      if (foliageCpu_.size() > 3500) {
-        foliageCpu_.erase(foliageCpu_.begin(),
-                          foliageCpu_.begin() + static_cast<long>(foliageCpu_.size() - 3500));
-      }
-      vulkan_.uploadFoliage(foliageCpu_);
+  pathRebuildAccum_ += dt;
+  if (pathRebuildAccum_ > 0.35f || ctx_.sprint.sprinting) {
+    if (pathRebuildAccum_ > 0.2f) {
+      rebuildPathRibbon();
+      pathRebuildAccum_ = 0.f;
     }
   }
 
@@ -432,7 +505,8 @@ void Application::render() {
   ubo.invViewProj = glm::inverse(viewProj);
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
   ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, vulkan_.materialFlags(), 0.f, 0.f);
-  ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
+  const float pathHw = ctx_.paths.ribbonHalfWidth(ctx_.sprint.score);
+  ubo.tiling_pad = glm::vec4(0.032f, pathHw, 3.2f, 4.0f);
 
   // Dog faces sprint.yaw (movement); camera orbits independently
   const float yaw = ctx_.sprint.yaw;
@@ -465,8 +539,8 @@ void Application::render() {
     boltDraw[static_cast<size_t>(i)].color = glm::vec4(1.f, 1.f, 1.f, e);
   }
 
-  vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()), boltDraw.data(),
-                    VulkanContext::kBoltPartCount, static_cast<uint32_t>(particleGpu_.size()));
+  vulkan_.drawFrame(ubo, instCounts_, boltDraw.data(), VulkanContext::kBoltPartCount,
+                    static_cast<uint32_t>(particleGpu_.size()));
 }
 
 void Application::run() {

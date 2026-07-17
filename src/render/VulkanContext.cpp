@@ -57,6 +57,16 @@ void VulkanContext::shutdown() {
   destroyBuffer(terrain_.index);
   destroyBuffer(stalk_.vertex);
   destroyBuffer(stalk_.index);
+  destroyBuffer(bush_.vertex);
+  destroyBuffer(bush_.index);
+  destroyBuffer(tall_.vertex);
+  destroyBuffer(tall_.index);
+  destroyBuffer(detail_.vertex);
+  destroyBuffer(detail_.index);
+  destroyBuffer(ruin_.vertex);
+  destroyBuffer(ruin_.index);
+  destroyBuffer(pathRibbon_.vertex);
+  destroyBuffer(pathRibbon_.index);
   destroyBuffer(blob_.vertex);
   destroyBuffer(blob_.index);
   destroyBuffer(bolt_.vertex);
@@ -1158,26 +1168,32 @@ bool VulkanContext::uploadTerrain(const std::vector<VertexPC>& verts,
   return true;
 }
 
-bool VulkanContext::uploadStalkMesh(const std::vector<VertexPC>& verts,
-                                    const std::vector<uint32_t>& indices) {
-  if (device_ == VK_NULL_HANDLE) return false;
+bool VulkanContext::uploadMesh(GpuMesh& mesh, const std::vector<VertexPC>& verts,
+                               const std::vector<uint32_t>& indices) {
+  if (device_ == VK_NULL_HANDLE || verts.empty() || indices.empty()) return false;
   vkDeviceWaitIdle(device_);
-  destroyBuffer(stalk_.vertex);
-  destroyBuffer(stalk_.index);
+  destroyBuffer(mesh.vertex);
+  destroyBuffer(mesh.index);
   const VkDeviceSize vsize = sizeof(VertexPC) * verts.size();
   const VkDeviceSize isize = sizeof(uint32_t) * indices.size();
   if (!createBuffer(vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                    stalk_.vertex))
+                    mesh.vertex))
     return false;
   if (!createBuffer(isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                    stalk_.index))
+                    mesh.index))
     return false;
-  copyToBuffer(stalk_.vertex, verts.data(), vsize);
-  copyToBuffer(stalk_.index, indices.data(), isize);
-  stalk_.vertexCount = static_cast<uint32_t>(verts.size());
-  stalk_.indexCount = static_cast<uint32_t>(indices.size());
+  copyToBuffer(mesh.vertex, verts.data(), vsize);
+  copyToBuffer(mesh.index, indices.data(), isize);
+  mesh.vertexCount = static_cast<uint32_t>(verts.size());
+  mesh.indexCount = static_cast<uint32_t>(indices.size());
+  return true;
+}
+
+bool VulkanContext::uploadStalkMesh(const std::vector<VertexPC>& verts,
+                                    const std::vector<uint32_t>& indices) {
+  if (!uploadMesh(stalk_, verts, indices)) return false;
   logInfo("Stalk mesh GPU: " + std::to_string(stalk_.indexCount) + " indices");
   return true;
 }
@@ -1328,7 +1344,7 @@ bool VulkanContext::recreateSwapchain() {
   return true;
 }
 
-void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount,
+void VulkanContext::drawFrame(const FrameUBO& ubo, const SceneInstanceCounts& counts,
                               const ObjectPush* boltParts, int boltPartCount,
                               uint32_t particleCount) {
   if (device_ == VK_NULL_HANDLE || !valid_) return;
@@ -1396,22 +1412,42 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount,
     vkCmdDrawIndexed(cmd, terrain_.indexCount, 1, 0, 0, 0);
   }
 
-  // Soft contact shadows under stalks (before foliage so stalks sit on top)
-  if (blobPipeline_ && foliageCount > 0 && blob_.indexCount > 0) {
+  // Real path ribbon mesh (PathGenerator → strip)
+  if (terrainPipeline_ && pathRibbon_.indexCount > 0) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrainPipeline_);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &pathRibbon_.vertex.buffer, &off);
+    vkCmdBindIndexBuffer(cmd, pathRibbon_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, pathRibbon_.indexCount, 1, 0, 0, 0);
+  }
+
+  const uint32_t totalInst =
+      counts.stalkCount + counts.bushCount + counts.tallCount + counts.detailCount + counts.ruinCount;
+
+  // Soft contact shadows under main stalks
+  if (blobPipeline_ && counts.stalkCount > 0 && blob_.indexCount > 0) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blobPipeline_);
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &blob_.vertex.buffer, &off);
     vkCmdBindIndexBuffer(cmd, blob_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, blob_.indexCount, foliageCount, 0, 0, 0);
+    vkCmdDrawIndexed(cmd, blob_.indexCount, counts.stalkCount, 0, 0, counts.stalkFirst);
   }
 
-  if (foliagePipeline_ && foliageCount > 0 && stalk_.indexCount > 0) {
+  auto drawInstanced = [&](GpuMesh& mesh, uint32_t count, uint32_t first) {
+    if (!foliagePipeline_ || count == 0 || mesh.indexCount == 0) return;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, foliagePipeline_);
     VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &stalk_.vertex.buffer, &off);
-    vkCmdBindIndexBuffer(cmd, stalk_.index.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, stalk_.indexCount, foliageCount, 0, 0, 0);
-  }
+    vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex.buffer, &off);
+    vkCmdBindIndexBuffer(cmd, mesh.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, mesh.indexCount, count, 0, 0, first);
+  };
+
+  drawInstanced(stalk_, counts.stalkCount, counts.stalkFirst);
+  drawInstanced(bush_, counts.bushCount, counts.bushFirst);
+  drawInstanced(tall_, counts.tallCount, counts.tallFirst);
+  drawInstanced(detail_, counts.detailCount, counts.detailFirst);
+  drawInstanced(ruin_, counts.ruinCount, counts.ruinFirst);
+  (void)totalInst;
 
   // Multi-part Bolt GSD (body, legs, tail, aura)
   if (boltPipeline_ && boltParts && boltPartCount > 0) {

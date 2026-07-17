@@ -65,10 +65,15 @@ add_library(bolt_engine
   src/world/SpawnRules.cpp
   src/world/TerrainMesh.cpp
   src/pcg/PathGenerator.cpp
+  src/pcg/PathRibbon.cpp
   src/pcg/VegetationSpawner.cpp
+  src/pcg/DetailSpawner.cpp
+  src/pcg/RuinGenerator.cpp
+  src/pcg/PropMeshes.cpp
   src/pcg/StalkMesh.cpp
   src/pcg/MeshPrimitives.cpp
   src/pcg/BoltGsd.cpp
+  src/world/WorldStreamer.cpp
   src/ecs/Systems.cpp
   src/assets/MaterialLibrary.cpp
   src/assets/TextureLoader.cpp

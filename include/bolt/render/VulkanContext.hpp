@@ -55,7 +55,25 @@ public:
   /** Upload one GSD part (0..BoltPart::Count-1). */
   bool uploadBoltPart(int partIndex, const std::vector<VertexPC>& verts,
                       const std::vector<uint32_t>& indices);
+  /** Packed instance buffer (stalk|bush|tall|detail|ruins) — one SSBO for all instanced draws. */
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
+  bool uploadMesh(GpuMesh& mesh, const std::vector<VertexPC>& verts,
+                  const std::vector<uint32_t>& indices);
+  bool uploadBushMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices) {
+    return uploadMesh(bush_, verts, indices);
+  }
+  bool uploadDetailMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices) {
+    return uploadMesh(detail_, verts, indices);
+  }
+  bool uploadRuinMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices) {
+    return uploadMesh(ruin_, verts, indices);
+  }
+  bool uploadTallMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices) {
+    return uploadMesh(tall_, verts, indices);
+  }
+  bool uploadPathMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices) {
+    return uploadMesh(pathRibbon_, verts, indices);
+  }
   bool uploadParticles(const std::vector<ParticleGPU>& particles);
 
   /**
@@ -79,7 +97,21 @@ public:
   bool loadBiomeMaterials(const std::string& groundBase, const std::string& rockBase,
                           const std::string& pathBase, const std::string& stalkBase);
 
-  void drawFrame(const FrameUBO& ubo, uint32_t foliageCount,
+  /** Packed instance SSBO layout: stalk | bush | tall | detail | ruins */
+  struct SceneInstanceCounts {
+    uint32_t stalkCount = 0;
+    uint32_t stalkFirst = 0;
+    uint32_t bushCount = 0;
+    uint32_t bushFirst = 0;
+    uint32_t tallCount = 0;
+    uint32_t tallFirst = 0;
+    uint32_t detailCount = 0;
+    uint32_t detailFirst = 0;
+    uint32_t ruinCount = 0;
+    uint32_t ruinFirst = 0;
+  };
+
+  void drawFrame(const FrameUBO& ubo, const SceneInstanceCounts& counts,
                  const ObjectPush* boltParts, int boltPartCount, uint32_t particleCount);
 
   std::uint32_t frameIndex() const { return frameIndex_; }
@@ -178,15 +210,21 @@ private:
 
   GpuMesh terrain_;
   GpuMesh stalk_;
+  GpuMesh bush_;
+  GpuMesh tall_;
+  GpuMesh detail_;
+  GpuMesh ruin_;
+  GpuMesh pathRibbon_;
   GpuMesh blob_;
   GpuMesh bolt_; // legacy single mesh
   std::array<GpuMesh, kBoltPartCount> boltParts_{};
-  GpuBuffer foliageInstanceBuf_{};
+  GpuBuffer foliageInstanceBuf_{}; // packed: stalk|bush|tall|detail|ruins
   GpuBuffer particleBuf_{};
   uint32_t foliageCapacity_ = 0;
   uint32_t foliageCount_ = 0;
   uint32_t particleCapacity_ = 0;
   uint32_t particleCount_ = 0;
+  VkPipeline pathPipeline_ = VK_NULL_HANDLE;
 
   void bindSsbo(uint32_t setIndex, const GpuBuffer& buf);
   void bindSsboBinding(uint32_t setIndex, uint32_t binding, const GpuBuffer& buf);

@@ -8,6 +8,9 @@
 #include "bolt/render/VulkanContext.hpp"
 #include "bolt/render/RenderGraph.hpp"
 #include "bolt/render/GpuMesh.hpp"
+#include "bolt/world/WorldStreamer.hpp"
+#include "bolt/pcg/DetailSpawner.hpp"
+#include "bolt/pcg/RuinGenerator.hpp"
 
 struct GLFWwindow;
 
@@ -36,6 +39,9 @@ public:
 private:
   void createCrystalScene();
   void rebuildTerrainAroundPlayer(bool force);
+  void refreshWorldStreaming();
+  void rebuildPathRibbon();
+  void packAndUploadInstances();
   void updateParticles(float dt);
   void fixedUpdate(float dt);
   void frameUpdate(float dt);
@@ -48,29 +54,34 @@ private:
   MaterialLibrary materials_;
   VulkanContext vulkan_;
   RenderGraph graph_;
-  std::vector<FoliageInstanceGPU> foliageCpu_;
+
+  WorldStreamer streamer_;
+  DetailSpawner detailSpawner_;
+  RuinGenerator ruinGenerator_;
+
+  std::vector<FoliageInstanceGPU> packedInstances_;
+  VulkanContext::SceneInstanceCounts instCounts_{};
   std::vector<CpuParticle> particles_;
   std::vector<ParticleGPU> particleGpu_;
   float emitAccum_ = 0.f;
   float trailDistAccum_ = 0.f;
+  float pathRebuildAccum_ = 0.f;
   glm::vec3 lastTrailPos_{0.f};
   bool boltFullMesh_ = false;
   bool running_ = false;
   int width_ = 1280;
   int height_ = 720;
 
-  // Free orbit camera around Bolt (RMB drag + scroll zoom)
-  float camOrbitYaw_ = 0.55f;   // radians — start slightly to the side (¾)
-  float camOrbitPitch_ = 0.32f; // look down a bit
+  float camOrbitYaw_ = 0.55f;
+  float camOrbitPitch_ = 0.32f;
   float camDist_ = 8.5f;
   double mouseLastX_ = 0.0;
   double mouseLastY_ = 0.0;
   bool mouseLookActive_ = false;
 
-  // Streaming terrain patch (follows Bolt so ground never “ends”)
   float terrainOriginX_ = 0.f;
   float terrainOriginZ_ = 0.f;
-  float terrainSize_ = 640.f;
+  float terrainSize_ = 432.f; // 6 chunks * 72m
   int terrainSegs_ = 72;
   bool fullscreen_ = false;
   int windowedX_ = 100;
