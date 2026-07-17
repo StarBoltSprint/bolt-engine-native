@@ -1,10 +1,12 @@
 #pragma once
 #include <entt/entt.hpp>
+#include <vector>
 #include "bolt/core/Time.hpp"
 #include "bolt/ecs/Systems.hpp"
 #include "bolt/assets/MaterialLibrary.hpp"
 #include "bolt/render/VulkanContext.hpp"
 #include "bolt/render/RenderGraph.hpp"
+#include "bolt/render/GpuMesh.hpp"
 
 struct GLFWwindow;
 
@@ -15,6 +17,7 @@ public:
   bool init();
   void run();
   void shutdown();
+  void onResize(int w, int h);
 
 private:
   void createCrystalScene();
@@ -29,7 +32,10 @@ private:
   MaterialLibrary materials_;
   VulkanContext vulkan_;
   RenderGraph graph_;
+  std::vector<FoliageInstanceGPU> foliageCpu_;
   bool running_ = false;
+  int width_ = 1280;
+  int height_ = 720;
 };
 
 } // namespace bolt

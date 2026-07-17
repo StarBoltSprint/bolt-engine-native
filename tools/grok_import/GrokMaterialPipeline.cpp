@@ -22,15 +22,18 @@ bool runGrokMaterialPipeline(const GrokImportOptions& opt) {
     return false;
   }
 
-  // Placeholder sidecar maps — replace with real generators / Substance / custom
-  auto touch = [&](const fs::path& p) {
-    std::ofstream o(p, std::ios::binary);
-    o << "PNG_PLACEHOLDER"; // real tool writes PNG via stb
+  // Sidecar maps: copy albedo as stand-in for height/roughness until full image ops land.
+  // Normal/metallic use albedo copy + JSON notes for artist replacement.
+  auto copyAs = [&](const char* suffix) {
+    auto dst = opt.outDir / (opt.name + suffix);
+    fs::copy_file(albedoOut, dst, fs::copy_options::overwrite_existing, ec);
   };
-  if (opt.generateNormalFromLuma) touch(opt.outDir / (opt.name + "_normal.png"));
-  if (opt.generateRoughness) touch(opt.outDir / (opt.name + "_roughness.png"));
-  if (opt.generateHeight) touch(opt.outDir / (opt.name + "_height.png"));
-  touch(opt.outDir / (opt.name + "_metallic.png"));
+  if (opt.generateNormalFromLuma) copyAs("_normal.png");
+  if (opt.generateRoughness) copyAs("_roughness.png");
+  if (opt.generateHeight) copyAs("_height.png");
+  copyAs("_metallic.png");
+  bolt::logInfo(
+      "Grok import: sidecar maps are albedo copies — refine with Substance/Photoshop for production");
 
   nlohmann::json j;
   j["name"] = opt.name;
