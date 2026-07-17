@@ -274,9 +274,50 @@ bool VulkanContext::createSwapchain() {
   return true;
 }
 
+void VulkanContext::destroyDepthResources() {
+  if (depthView_) vkDestroyImageView(device_, depthView_, nullptr);
+  if (depthImage_) vkDestroyImage(device_, depthImage_, nullptr);
+  if (depthMemory_) vkFreeMemory(device_, depthMemory_, nullptr);
+  depthView_ = VK_NULL_HANDLE;
+  depthImage_ = VK_NULL_HANDLE;
+  depthMemory_ = VK_NULL_HANDLE;
+}
+
+bool VulkanContext::createDepthResources() {
+  destroyDepthResources();
+  VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ii.imageType = VK_IMAGE_TYPE_2D;
+  ii.extent = {swapExtent_.width, swapExtent_.height, 1};
+  ii.mipLevels = 1;
+  ii.arrayLayers = 1;
+  ii.format = depthFormat_;
+  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  ii.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  ii.samples = VK_SAMPLE_COUNT_1_BIT;
+  if (vkCreateImage(device_, &ii, nullptr, &depthImage_) != VK_SUCCESS) return false;
+  VkMemoryRequirements req{};
+  vkGetImageMemoryRequirements(device_, depthImage_, &req);
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (vkAllocateMemory(device_, &ai, nullptr, &depthMemory_) != VK_SUCCESS) return false;
+  vkBindImageMemory(device_, depthImage_, depthMemory_, 0);
+
+  VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  vi.image = depthImage_;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = depthFormat_;
+  vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+  vi.subresourceRange.levelCount = 1;
+  vi.subresourceRange.layerCount = 1;
+  return vkCreateImageView(device_, &vi, nullptr, &depthView_) == VK_SUCCESS;
+}
+
 void VulkanContext::cleanupSwapchain() {
   for (auto fb : framebuffers_) vkDestroyFramebuffer(device_, fb, nullptr);
   framebuffers_.clear();
+  destroyDepthResources();
   for (auto v : swapViews_) vkDestroyImageView(device_, v, nullptr);
   swapViews_.clear();
   if (swapchain_) {
@@ -296,22 +337,37 @@ bool VulkanContext::createRenderPass() {
   color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+  VkAttachmentDescription depth{};
+  depth.format = depthFormat_;
+  depth.samples = VK_SAMPLE_COUNT_1_BIT;
+  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
   VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
   VkSubpassDescription sub{};
   sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
   sub.colorAttachmentCount = 1;
   sub.pColorAttachments = &colorRef;
+  sub.pDepthStencilAttachment = &depthRef;
 
   VkSubpassDependency dep{};
   dep.srcSubpass = VK_SUBPASS_EXTERNAL;
   dep.dstSubpass = 0;
-  dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+  std::array<VkAttachmentDescription, 2> atts = {color, depth};
   VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-  ci.attachmentCount = 1;
-  ci.pAttachments = &color;
+  ci.attachmentCount = static_cast<uint32_t>(atts.size());
+  ci.pAttachments = atts.data();
   ci.subpassCount = 1;
   ci.pSubpasses = &sub;
   ci.dependencyCount = 1;
@@ -320,12 +376,13 @@ bool VulkanContext::createRenderPass() {
 }
 
 bool VulkanContext::createFramebuffers() {
+  if (!createDepthResources()) return false;
   framebuffers_.resize(swapViews_.size());
   for (size_t i = 0; i < swapViews_.size(); ++i) {
-    VkImageView atts[] = {swapViews_[i]};
+    VkImageView atts[] = {swapViews_[i], depthView_};
     VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     ci.renderPass = renderPass_;
-    ci.attachmentCount = 1;
+    ci.attachmentCount = 2;
     ci.pAttachments = atts;
     ci.width = swapExtent_.width;
     ci.height = swapExtent_.height;
@@ -470,6 +527,11 @@ bool VulkanContext::createPipelines() {
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+  VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  ds.depthTestEnable = VK_TRUE;
+  ds.depthWriteEnable = VK_TRUE;
+  ds.depthCompareOp = VK_COMPARE_OP_LESS;
+
   VkPipelineColorBlendAttachmentState blendAtt{};
   blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -490,6 +552,7 @@ bool VulkanContext::createPipelines() {
   gp.pViewportState = &vs;
   gp.pRasterizationState = &rs;
   gp.pMultisampleState = &ms;
+  gp.pDepthStencilState = &ds;
   gp.pColorBlendState = &cb;
   gp.layout = pipelineLayout_;
   gp.renderPass = renderPass_;
@@ -933,15 +996,16 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   vkBeginCommandBuffer(cmd, &bi);
 
-  VkClearValue clear{};
-  // Crystal night sky
-  clear.color = {{0.02f, 0.04f, 0.10f, 1.f}};
+  VkClearValue clears[2]{};
+  // Deep crystal nebula sky
+  clears[0].color = {{0.015f, 0.03f, 0.08f, 1.f}};
+  clears[1].depthStencil = {1.f, 0};
   VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
   rp.renderPass = renderPass_;
   rp.framebuffer = framebuffers_[imageIndex];
   rp.renderArea.extent = swapExtent_;
-  rp.clearValueCount = 1;
-  rp.pClearValues = &clear;
+  rp.clearValueCount = 2;
+  rp.pClearValues = clears;
   vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
   VkViewport vp{};

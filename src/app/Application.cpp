@@ -5,6 +5,7 @@
 #include "bolt/core/Log.hpp"
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -62,7 +63,9 @@ void Application::createCrystalScene() {
 
   // Terrain from HeightField
   const auto q = qualitySettings(ctx_.quality);
-  auto cpuTerrain = buildTerrainMesh(ctx_.height, q.terrainSegs, 160.f, 0.f, 0.f, 0.4f);
+  // Higher segs for smoother hills when quality allows
+  const int segs = std::max(q.terrainSegs, 48);
+  auto cpuTerrain = buildTerrainMesh(ctx_.height, segs, 200.f, 0.f, 0.f, 0.45f);
   vulkan_.uploadTerrain(cpuTerrain.vertices, cpuTerrain.indices);
 
   // Grok PBR maps (run bolt_grok_import offline first) — triplanar on terrain
@@ -204,7 +207,7 @@ void Application::render() {
   const glm::vec3 target = ctx_.sprint.position + glm::vec3(0.f, 1.f, 0.f);
   const float aspect = height_ > 0 ? width_ / static_cast<float>(height_) : 16.f / 9.f;
   glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0, 1, 0));
-  glm::mat4 proj = glm::perspective(glm::radians(60.f), aspect, 0.1f, 400.f);
+  glm::mat4 proj = glm::perspective(glm::radians(58.f), aspect, 0.15f, 280.f);
   proj[1][1] *= -1.f; // Vulkan Y flip
 
   FrameUBO ubo{};
@@ -212,7 +215,8 @@ void Application::render() {
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
   ubo.sprintScore_flags =
       glm::vec4(ctx_.sprint.score, vulkan_.hasTerrainTextures() ? 1.f : 0.f, 0.f, 0.f);
-  ubo.tiling_pad = glm::vec4(0.08f, 0.f, 0.f, 0.f);
+  // Finer triplanar scale = less obvious big tiles
+  ubo.tiling_pad = glm::vec4(0.035f, 0.f, 0.f, 0.f);
 
   vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()));
 }

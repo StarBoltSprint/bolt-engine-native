@@ -99,6 +99,14 @@ private:
   std::vector<VkImageView> swapViews_;
   std::vector<VkFramebuffer> framebuffers_;
 
+  VkImage depthImage_ = VK_NULL_HANDLE;
+  VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
+  VkImageView depthView_ = VK_NULL_HANDLE;
+  VkFormat depthFormat_ = VK_FORMAT_D32_SFLOAT;
+
+  bool createDepthResources();
+  void destroyDepthResources();
+
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
   VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
   VkPipeline terrainPipeline_ = VK_NULL_HANDLE;
