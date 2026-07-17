@@ -2,9 +2,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <optional>
 #include <glm/glm.hpp>
 #include "bolt/render/GpuMesh.hpp"
+#include "bolt/render/GpuTexture.hpp"
 #include "bolt/sprint/SprintCore.hpp"
 #include "bolt/render/QualityTier.hpp"
 
@@ -15,12 +15,14 @@ namespace bolt {
 struct FrameUBO {
   glm::mat4 viewProj;
   glm::vec4 cameraPos_time;     // xyz cam, w time
-  glm::vec4 sprintScore_flags;  // x score, y gpuHeight flag
+  glm::vec4 sprintScore_flags;  // x score, y hasTerrainTex
+  glm::vec4 tiling_pad;         // x tiling
 };
 
 /**
- * Real Vulkan device + swapchain + simple forward renderer for Crystal slice.
- * Draws: heightfield terrain, instanced foliage, clear color sky.
+ * Vulkan device + swapchain + Crystal renderer.
+ * Terrain: HeightField mesh + optional PBR triplanar (albedo/normal/roughness).
+ * Foliage: instanced stalks.
  */
 class VulkanContext {
 public:
@@ -32,20 +34,19 @@ public:
   void endFrame();
   void resize(int w, int h);
 
-  /** Upload / replace terrain mesh (CPU → GPU). */
   bool uploadTerrain(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
-
-  /** Unit stalk mesh for instancing. */
   bool uploadStalkMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
-
-  /** Upload foliage instances (dynamic). */
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
 
-  /** Per-frame camera + sprint uniforms + draw. */
+  /** Load PBR set (RGBA8 albedo/normal, R8 roughness). Empty path = skip. */
+  bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
+                           const std::string& roughnessPath);
+
   void drawFrame(const FrameUBO& ubo, uint32_t foliageCount);
 
   std::uint32_t frameIndex() const { return frameIndex_; }
   VkDevice device() const { return device_; }
+  bool hasTerrainTextures() const { return terrainMat_.valid; }
 
 private:
   bool createInstance();
@@ -61,6 +62,7 @@ private:
   bool createPipelines();
   bool createUniformBuffers();
   bool createDescriptorPoolAndSets();
+  void updateMaterialDescriptors();
   void cleanupSwapchain();
   bool recreateSwapchain();
 
@@ -69,9 +71,15 @@ private:
                     GpuBuffer& out);
   void destroyBuffer(GpuBuffer& b);
   bool copyToBuffer(GpuBuffer& dst, const void* data, VkDeviceSize size);
+  bool createTextureFromRgba(const std::vector<uint8_t>& rgba, int w, int h, bool srgb, GpuTexture& out);
+  bool createTextureFromGrey(const std::vector<uint8_t>& grey, int w, int h, GpuTexture& out);
+  void destroyTexture(GpuTexture& t);
+  bool transitionImage(VkImage image, VkImageLayout oldL, VkImageLayout newL);
+  bool copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w, uint32_t h);
   VkShaderModule loadShaderModule(const std::string& path) const;
   VkCommandBuffer beginOneTimeCommands() const;
   void endOneTimeCommands(VkCommandBuffer cmd) const;
+  bool createDefault1x1Textures();
 
   bool valid_ = false;
   GLFWwindow* window_ = nullptr;
@@ -107,7 +115,6 @@ private:
   VkSemaphore renderFinished_[kMaxFrames]{};
   VkFence inFlight_[kMaxFrames]{};
   uint32_t frameIndex_ = 0;
-  uint32_t currentImage_ = 0;
 
   std::vector<GpuBuffer> uniformBuffers_;
   std::vector<void*> uniformMapped_;
@@ -117,6 +124,11 @@ private:
   GpuBuffer foliageInstanceBuf_{};
   uint32_t foliageCapacity_ = 0;
   uint32_t foliageCount_ = 0;
+
+  MaterialGpu terrainMat_{};
+  GpuTexture defaultAlbedo_{};
+  GpuTexture defaultNormal_{};
+  GpuTexture defaultRough_{};
 
   int width_ = 1280;
   int height_ = 720;

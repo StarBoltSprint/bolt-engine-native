@@ -9,5 +9,6 @@
   "detailTiling": 18.0,
   "triplanar": true,
   "hotReload": true,
-  "notes": "Drop Grok Imagine tileable maps here via bolt_grok_import"
+  "source": "grok_imagine",
+  "pipeline": "luma_height_sobel_normal_v1"
 }

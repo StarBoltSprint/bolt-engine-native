@@ -12,18 +12,21 @@ Convert **Grok Imagine** concept images into **natural integrated** PBR material
 
 2. Save PNG → assets/grok_inbox/crystal_ground_albedo_src.png
 
-3. Run tool:
-   bolt_grok_import --in assets/grok_inbox/crystal_ground_albedo_src.png \
-                    --out assets/materials/crystal_nebula/ground \
+3. Run tool (or `scripts/run_grok_pipeline.ps1`):
+   bolt_grok_import --in assets/grok_inbox/crystal_ground_sample.png ^
+                    --out assets/materials/crystal_nebula ^
                     --name crystal_ground
 
-4. Tool writes:
-   ground_albedo.png
-   ground_normal.png      (from height/sobel approximation or external)
-   ground_roughness.png
-   ground_metallic.png
-   ground_height.png
-   ground.json            (MaterialLibrary manifest)
+4. Tool **really generates**:
+   crystal_ground_albedo.png     (from Imagine)
+   crystal_ground_height.png     (luma → height)
+   crystal_ground_normal.png     (Sobel from height)
+   crystal_ground_roughness.png  (derived)
+   crystal_ground_metallic.png   (derived)
+   crystal_ground.json           (MaterialLibrary / engine manifest)
+
+5. Runtime: `VulkanContext::loadTerrainMaterial` uploads maps; terrain.frag
+   samples them with **triplanar** mapping on HeightField geometry.
 
 5. Runtime MaterialLibrary hot-reloads when ground.json or maps change
 ```

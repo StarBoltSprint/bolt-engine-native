@@ -1,4 +1,5 @@
 #include "bolt/render/VulkanContext.hpp"
+#include "bolt/assets/TextureLoader.hpp"
 #include "bolt/core/Log.hpp"
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -56,6 +57,14 @@ void VulkanContext::shutdown() {
   destroyBuffer(stalk_.vertex);
   destroyBuffer(stalk_.index);
   destroyBuffer(foliageInstanceBuf_);
+  if (terrainMat_.valid) {
+    if (terrainMat_.albedo.image != defaultAlbedo_.image) destroyTexture(terrainMat_.albedo);
+    if (terrainMat_.normal.image != defaultNormal_.image) destroyTexture(terrainMat_.normal);
+    if (terrainMat_.roughness.image != defaultRough_.image) destroyTexture(terrainMat_.roughness);
+  }
+  destroyTexture(defaultAlbedo_);
+  destroyTexture(defaultNormal_);
+  destroyTexture(defaultRough_);
   for (auto& u : uniformBuffers_) destroyBuffer(u);
   uniformMapped_.clear();
   if (descPool_) vkDestroyDescriptorPool(device_, descPool_, nullptr);
@@ -364,7 +373,18 @@ bool VulkanContext::createDescriptorSetLayout() {
   inst.descriptorCount = 1;
   inst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-  std::array<VkDescriptorSetLayoutBinding, 2> binds = {ubo, inst};
+  VkDescriptorSetLayoutBinding albedo{};
+  albedo.binding = 2;
+  albedo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  albedo.descriptorCount = 1;
+  albedo.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding normalB = albedo;
+  normalB.binding = 3;
+  VkDescriptorSetLayoutBinding roughB = albedo;
+  roughB.binding = 4;
+
+  std::array<VkDescriptorSetLayoutBinding, 5> binds = {ubo, inst, albedo, normalB, roughB};
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   ci.bindingCount = static_cast<uint32_t>(binds.size());
   ci.pBindings = binds.data();
@@ -556,9 +576,10 @@ bool VulkanContext::createUniformBuffers() {
 }
 
 bool VulkanContext::createDescriptorPoolAndSets() {
-  std::array<VkDescriptorPoolSize, 2> sizes{};
+  std::array<VkDescriptorPoolSize, 3> sizes{};
   sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxFrames};
   sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxFrames};
+  sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 3};
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pci.poolSizeCount = static_cast<uint32_t>(sizes.size());
   pci.pPoolSizes = sizes.data();
@@ -573,24 +594,221 @@ bool VulkanContext::createDescriptorPoolAndSets() {
   descSets_.resize(kMaxFrames);
   if (vkAllocateDescriptorSets(device_, &ai, descSets_.data()) != VK_SUCCESS) return false;
 
+  if (!createDefault1x1Textures()) return false;
+  updateMaterialDescriptors();
+  return true;
+}
+
+void VulkanContext::destroyTexture(GpuTexture& t) {
+  if (t.sampler) vkDestroySampler(device_, t.sampler, nullptr);
+  if (t.view) vkDestroyImageView(device_, t.view, nullptr);
+  if (t.image) vkDestroyImage(device_, t.image, nullptr);
+  if (t.memory) vkFreeMemory(device_, t.memory, nullptr);
+  t = {};
+}
+
+bool VulkanContext::createDefault1x1Textures() {
+  // Teal albedo, flat normal, mid roughness
+  std::vector<uint8_t> alb = {40, 120, 150, 255};
+  std::vector<uint8_t> nrm = {128, 128, 255, 255};
+  std::vector<uint8_t> rgh = {160};
+  if (!createTextureFromRgba(alb, 1, 1, true, defaultAlbedo_)) return false;
+  if (!createTextureFromRgba(nrm, 1, 1, false, defaultNormal_)) return false;
+  if (!createTextureFromGrey(rgh, 1, 1, defaultRough_)) return false;
+  terrainMat_.albedo = defaultAlbedo_;
+  terrainMat_.normal = defaultNormal_;
+  terrainMat_.roughness = defaultRough_;
+  terrainMat_.valid = false; // procedural until Grok maps loaded
+  return true;
+}
+
+VkCommandBuffer VulkanContext::beginOneTimeCommands() const {
+  VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  ai.commandPool = cmdPool_;
+  ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  ai.commandBufferCount = 1;
+  VkCommandBuffer cmd;
+  vkAllocateCommandBuffers(device_, &ai, &cmd);
+  VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &bi);
+  return cmd;
+}
+
+void VulkanContext::endOneTimeCommands(VkCommandBuffer cmd) const {
+  vkEndCommandBuffer(cmd);
+  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &cmd;
+  vkQueueSubmit(graphicsQueue_, 1, &si, VK_NULL_HANDLE);
+  vkQueueWaitIdle(graphicsQueue_);
+  vkFreeCommandBuffers(device_, cmdPool_, 1, &cmd);
+}
+
+bool VulkanContext::transitionImage(VkImage image, VkImageLayout oldL, VkImageLayout newL) {
+  VkCommandBuffer cmd = beginOneTimeCommands();
+  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  b.oldLayout = oldL;
+  b.newLayout = newL;
+  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = image;
+  b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  b.subresourceRange.levelCount = 1;
+  b.subresourceRange.layerCount = 1;
+  VkPipelineStageFlags src = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+  VkPipelineStageFlags dst = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  if (newL == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    src = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dst = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (newL == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  }
+  vkCmdPipelineBarrier(cmd, src, dst, 0, 0, nullptr, 0, nullptr, 1, &b);
+  endOneTimeCommands(cmd);
+  return true;
+}
+
+bool VulkanContext::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w, uint32_t h) {
+  VkCommandBuffer cmd = beginOneTimeCommands();
+  VkBufferImageCopy region{};
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = {w, h, 1};
+  vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  endOneTimeCommands(cmd);
+  return true;
+}
+
+bool VulkanContext::createTextureFromRgba(const std::vector<uint8_t>& rgba, int w, int h, bool srgb,
+                                          GpuTexture& out) {
+  destroyTexture(out);
+  const VkDeviceSize size = static_cast<VkDeviceSize>(rgba.size());
+  GpuBuffer staging{};
+  if (!createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging))
+    return false;
+  copyToBuffer(staging, rgba.data(), size);
+
+  out.format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+  out.width = static_cast<uint32_t>(w);
+  out.height = static_cast<uint32_t>(h);
+
+  VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ii.imageType = VK_IMAGE_TYPE_2D;
+  ii.extent = {out.width, out.height, 1};
+  ii.mipLevels = 1;
+  ii.arrayLayers = 1;
+  ii.format = out.format;
+  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ii.samples = VK_SAMPLE_COUNT_1_BIT;
+  if (vkCreateImage(device_, &ii, nullptr, &out.image) != VK_SUCCESS) return false;
+  VkMemoryRequirements req{};
+  vkGetImageMemoryRequirements(device_, out.image, &req);
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (vkAllocateMemory(device_, &ai, nullptr, &out.memory) != VK_SUCCESS) return false;
+  vkBindImageMemory(device_, out.image, out.memory, 0);
+
+  transitionImage(out.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  copyBufferToImage(staging.buffer, out.image, out.width, out.height);
+  transitionImage(out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  destroyBuffer(staging);
+
+  VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  vi.image = out.image;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = out.format;
+  vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  vi.subresourceRange.levelCount = 1;
+  vi.subresourceRange.layerCount = 1;
+  if (vkCreateImageView(device_, &vi, nullptr, &out.view) != VK_SUCCESS) return false;
+
+  VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  si.maxAnisotropy = 1.f;
+  if (vkCreateSampler(device_, &si, nullptr, &out.sampler) != VK_SUCCESS) return false;
+  return true;
+}
+
+bool VulkanContext::createTextureFromGrey(const std::vector<uint8_t>& grey, int w, int h, GpuTexture& out) {
+  // Expand to RGBA for simplicity
+  std::vector<uint8_t> rgba(static_cast<size_t>(w * h * 4));
+  for (int i = 0; i < w * h; ++i) {
+    rgba[static_cast<size_t>(i) * 4 + 0] = grey[static_cast<size_t>(i)];
+    rgba[static_cast<size_t>(i) * 4 + 1] = grey[static_cast<size_t>(i)];
+    rgba[static_cast<size_t>(i) * 4 + 2] = grey[static_cast<size_t>(i)];
+    rgba[static_cast<size_t>(i) * 4 + 3] = 255;
+  }
+  return createTextureFromRgba(rgba, w, h, false, out);
+}
+
+void VulkanContext::updateMaterialDescriptors() {
+  GpuTexture* alb = terrainMat_.albedo.view ? &terrainMat_.albedo : &defaultAlbedo_;
+  GpuTexture* nrm = terrainMat_.normal.view ? &terrainMat_.normal : &defaultNormal_;
+  GpuTexture* rgh = terrainMat_.roughness.view ? &terrainMat_.roughness : &defaultRough_;
   for (int i = 0; i < kMaxFrames; ++i) {
     VkDescriptorBufferInfo ubo{uniformBuffers_[i].buffer, 0, sizeof(FrameUBO)};
     VkDescriptorBufferInfo ssbo{foliageInstanceBuf_.buffer, 0, VK_WHOLE_SIZE};
-    std::array<VkWriteDescriptorSet, 2> writes{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = descSets_[i];
-    writes[0].dstBinding = 0;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[0].descriptorCount = 1;
-    writes[0].pBufferInfo = &ubo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = descSets_[i];
-    writes[1].dstBinding = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[1].descriptorCount = 1;
-    writes[1].pBufferInfo = &ssbo;
+    VkDescriptorImageInfo iAlb{alb->sampler, alb->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo iNrm{nrm->sampler, nrm->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo iRgh{rgh->sampler, rgh->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    auto fill = [&](int idx, uint32_t binding, VkDescriptorType type, const void* pBuf,
+                    const VkDescriptorImageInfo* pImg) {
+      writes[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[idx].dstSet = descSets_[i];
+      writes[idx].dstBinding = binding;
+      writes[idx].descriptorType = type;
+      writes[idx].descriptorCount = 1;
+      if (pBuf) writes[idx].pBufferInfo = static_cast<const VkDescriptorBufferInfo*>(pBuf);
+      if (pImg) writes[idx].pImageInfo = pImg;
+    };
+    fill(0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &ubo, nullptr);
+    fill(1, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &ssbo, nullptr);
+    fill(2, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iAlb);
+    fill(3, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iNrm);
+    fill(4, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iRgh);
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
+}
+
+bool VulkanContext::loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
+                                        const std::string& roughnessPath) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  ImageData alb, nrm, roughImg;
+  if (!loadImage(albedoPath, alb)) return false;
+  if (!loadImage(normalPath, nrm)) return false;
+  if (!loadImage(roughnessPath, roughImg)) return false;
+
+  // Don't destroy defaults if shared pointers - terrain mat owns separate textures
+  if (terrainMat_.valid) {
+    if (terrainMat_.albedo.image != defaultAlbedo_.image) destroyTexture(terrainMat_.albedo);
+    if (terrainMat_.normal.image != defaultNormal_.image) destroyTexture(terrainMat_.normal);
+    if (terrainMat_.roughness.image != defaultRough_.image) destroyTexture(terrainMat_.roughness);
+  }
+
+  if (!createTextureFromRgba(alb.pixels, alb.width, alb.height, true, terrainMat_.albedo)) return false;
+  if (!createTextureFromRgba(nrm.pixels, nrm.width, nrm.height, false, terrainMat_.normal)) return false;
+  // roughness: use R channel expanded
+  std::vector<uint8_t> grey(static_cast<size_t>(roughImg.width * roughImg.height));
+  for (int i = 0; i < roughImg.width * roughImg.height; ++i)
+    grey[static_cast<size_t>(i)] = roughImg.pixels[static_cast<size_t>(i) * 4];
+  if (!createTextureFromGrey(grey, roughImg.width, roughImg.height, terrainMat_.roughness)) return false;
+
+  terrainMat_.valid = true;
+  updateMaterialDescriptors();
+  logInfo("Terrain PBR material loaded from Grok pipeline maps");
   return true;
 }
 
@@ -706,7 +924,6 @@ void VulkanContext::drawFrame(const FrameUBO& ubo, uint32_t foliageCount) {
     recreateSwapchain();
     return;
   }
-  currentImage_ = imageIndex;
   vkResetFences(device_, 1, &inFlight_[frameIndex_]);
 
   std::memcpy(uniformMapped_[frameIndex_], &ubo, sizeof(FrameUBO));

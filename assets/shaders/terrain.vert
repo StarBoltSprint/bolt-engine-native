@@ -7,6 +7,7 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 viewProj;
   vec4 cameraPos_time;
   vec4 sprintScore_flags;
+  vec4 tiling_pad;
 } uFrame;
 
 layout(location = 0) out vec3 vWorldPos;

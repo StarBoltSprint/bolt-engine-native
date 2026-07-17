@@ -80,6 +80,7 @@ target_include_directories(bolt_engine
   PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${ENTT_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/stb
 )
 
 target_link_libraries(bolt_engine
@@ -118,11 +119,16 @@ add_custom_command(TARGET bolt_crystal POST_BUILD
 # Tools
 # -----------------------------------------------------------------------------
 if(BOLT_BUILD_TOOLS)
+  # Standalone: real Imagine → PBR (no Vulkan link required)
   add_executable(bolt_grok_import
     tools/grok_import/main.cpp
     tools/grok_import/GrokMaterialPipeline.cpp
+    tools/grok_import/ImageOps.cpp
   )
-  target_link_libraries(bolt_grok_import PRIVATE bolt_engine)
+  target_include_directories(bolt_grok_import PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools/grok_import
+    ${CMAKE_SOURCE_DIR}/third_party/stb
+  )
 
   add_executable(bolt_make_sample_ground
     tools/make_sample_ground/main.cpp

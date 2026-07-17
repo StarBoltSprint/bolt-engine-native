@@ -65,6 +65,15 @@ void Application::createCrystalScene() {
   auto cpuTerrain = buildTerrainMesh(ctx_.height, q.terrainSegs, 160.f, 0.f, 0.f, 0.4f);
   vulkan_.uploadTerrain(cpuTerrain.vertices, cpuTerrain.indices);
 
+  // Grok PBR maps (run bolt_grok_import offline first) — triplanar on terrain
+  {
+    const std::string base = "assets/materials/crystal_nebula/crystal_ground";
+    const bool ok = vulkan_.loadTerrainMaterial(
+        base + "_albedo.png", base + "_normal.png", base + "_roughness.png");
+    if (ok) logInfo("Crystal ground PBR active (Grok/triplanar)");
+    else logWarn("No crystal_ground PBR maps yet — procedural colors. Run: scripts/run_grok_pipeline.ps1");
+  }
+
   // Stalk mesh for instances
   std::vector<VertexPC> stalkV;
   std::vector<uint32_t> stalkI;
@@ -201,7 +210,9 @@ void Application::render() {
   FrameUBO ubo{};
   ubo.viewProj = proj * view;
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
-  ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, 0.f, 0.f, 0.f);
+  ubo.sprintScore_flags =
+      glm::vec4(ctx_.sprint.score, vulkan_.hasTerrainTextures() ? 1.f : 0.f, 0.f, 0.f);
+  ubo.tiling_pad = glm::vec4(0.08f, 0.f, 0.f, 0.f);
 
   vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()));
 }

@@ -1,11 +1,16 @@
 #include "GrokMaterialPipeline.hpp"
-#include "bolt/core/Log.hpp"
 #include <cstring>
+#include <cstdio>
 #include <string>
 
 static void usage() {
-  bolt::logInfo(
-      "Usage: bolt_grok_import --in <image.png> --out <dir> --name <material_name>");
+  std::fprintf(stderr,
+               "bolt_grok_import — Grok Imagine PNG → PBR material set\n"
+               "  --in   <image.png|jpg>   source Imagine export (prefer seamless tileable)\n"
+               "  --out  <dir>             output folder (e.g. assets/materials/crystal_nebula)\n"
+               "  --name <material_name>   base name (default: material)\n"
+               "\n"
+               "Writes: name_albedo/normal/roughness/metallic/height.png + name.json\n");
 }
 
 int main(int argc, char** argv) {

@@ -14,9 +14,11 @@ struct GrokImportOptions {
 };
 
 /**
- * Offline: Grok Imagine PNG → PBR set + JSON manifest for MaterialLibrary.
- * Current scaffold: copies albedo, writes procedural placeholder maps + JSON.
- * Later: real normal-from-height, tiling check, optional external AI upscalers.
+ * Offline: Grok Imagine PNG → real PBR set + JSON for MaterialLibrary / Vulkan.
+ *  albedo (RGB)
+ *  height  (greyscale from luma)
+ *  normal  (RGB Sobel from height)
+ *  roughness / metallic (derived greyscale)
  */
 bool runGrokMaterialPipeline(const GrokImportOptions& opt);
 
