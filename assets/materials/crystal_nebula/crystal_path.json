@@ -1,0 +1,10 @@
+{
+  "name": "crystal_path",
+  "albedo": "crystal_path_albedo.png",
+  "emissive": "crystal_path_emissive.png",
+  "roughness": "crystal_path_roughness.png",
+  "metallic": "crystal_path_metallic.png",
+  "tiling": 2.0,
+  "triplanar": true,
+  "hotReload": true
+}

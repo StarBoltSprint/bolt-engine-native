@@ -1,0 +1,9 @@
+{
+  "name": "bolt-engine",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glm",
+    "glfw3",
+    "nlohmann-json"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "crystal_foliage",
+  "albedo": "crystal_foliage_albedo.png",
+  "normal": "crystal_foliage_normal.png",
+  "roughness": "crystal_foliage_roughness.png",
+  "metallic": "crystal_foliage_metallic.png",
+  "emissive": "crystal_foliage_emissive.png",
+  "tiling": 1.0,
+  "triplanar": false,
+  "hotReload": true
+}

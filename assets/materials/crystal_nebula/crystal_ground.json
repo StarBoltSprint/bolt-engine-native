@@ -1,0 +1,13 @@
+{
+  "name": "crystal_ground",
+  "albedo": "crystal_ground_albedo.png",
+  "normal": "crystal_ground_normal.png",
+  "roughness": "crystal_ground_roughness.png",
+  "metallic": "crystal_ground_metallic.png",
+  "height": "crystal_ground_height.png",
+  "tiling": 5.0,
+  "detailTiling": 18.0,
+  "triplanar": true,
+  "hotReload": true,
+  "notes": "Drop Grok Imagine tileable maps here via bolt_grok_import"
+}

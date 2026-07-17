@@ -1,0 +1,12 @@
+build/
+cmake-build-*/
+out/
+.vs/
+.idea/
+*.user
+*.sdf
+compile_commands.json
+third_party/entt/
+assets/grok_inbox/*.png
+assets/grok_inbox/*.jpg
+!assets/grok_inbox/README.txt
