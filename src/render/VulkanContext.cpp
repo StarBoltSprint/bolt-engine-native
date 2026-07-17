@@ -57,11 +57,10 @@ void VulkanContext::shutdown() {
   destroyBuffer(stalk_.vertex);
   destroyBuffer(stalk_.index);
   destroyBuffer(foliageInstanceBuf_);
-  if (terrainMat_.valid) {
-    if (terrainMat_.albedo.image != defaultAlbedo_.image) destroyTexture(terrainMat_.albedo);
-    if (terrainMat_.normal.image != defaultNormal_.image) destroyTexture(terrainMat_.normal);
-    if (terrainMat_.roughness.image != defaultRough_.image) destroyTexture(terrainMat_.roughness);
-  }
+  destroyMaterialOwned(groundMat_);
+  destroyMaterialOwned(rockMat_);
+  destroyMaterialOwned(pathMat_);
+  destroyMaterialOwned(stalkMat_);
   destroyTexture(defaultAlbedo_);
   destroyTexture(defaultNormal_);
   destroyTexture(defaultRough_);
@@ -430,18 +429,18 @@ bool VulkanContext::createDescriptorSetLayout() {
   inst.descriptorCount = 1;
   inst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-  VkDescriptorSetLayoutBinding albedo{};
-  albedo.binding = 2;
-  albedo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  albedo.descriptorCount = 1;
-  albedo.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  // 4 material layers × 3 maps: ground(2-4), rock(5-7), path(8-10), stalk(11-13)
+  std::array<VkDescriptorSetLayoutBinding, 14> binds{};
+  binds[0] = ubo;
+  binds[1] = inst;
+  for (uint32_t b = 2; b <= 13; ++b) {
+    binds[b] = {};
+    binds[b].binding = b;
+    binds[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binds[b].descriptorCount = 1;
+    binds[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
 
-  VkDescriptorSetLayoutBinding normalB = albedo;
-  normalB.binding = 3;
-  VkDescriptorSetLayoutBinding roughB = albedo;
-  roughB.binding = 4;
-
-  std::array<VkDescriptorSetLayoutBinding, 5> binds = {ubo, inst, albedo, normalB, roughB};
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   ci.bindingCount = static_cast<uint32_t>(binds.size());
   ci.pBindings = binds.data();
@@ -642,7 +641,8 @@ bool VulkanContext::createDescriptorPoolAndSets() {
   std::array<VkDescriptorPoolSize, 3> sizes{};
   sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxFrames};
   sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxFrames};
-  sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 3};
+  // 4 materials × 3 maps per frame
+  sizes[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxFrames * 12};
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pci.poolSizeCount = static_cast<uint32_t>(sizes.size());
   pci.pPoolSizes = sizes.data();
@@ -678,11 +678,36 @@ bool VulkanContext::createDefault1x1Textures() {
   if (!createTextureFromRgba(alb, 1, 1, true, defaultAlbedo_)) return false;
   if (!createTextureFromRgba(nrm, 1, 1, false, defaultNormal_)) return false;
   if (!createTextureFromGrey(rgh, 1, 1, defaultRough_)) return false;
-  terrainMat_.albedo = defaultAlbedo_;
-  terrainMat_.normal = defaultNormal_;
-  terrainMat_.roughness = defaultRough_;
-  terrainMat_.valid = false; // procedural until Grok maps loaded
+  auto assignDefault = [&](MaterialGpu& m) {
+    m.albedo = defaultAlbedo_;
+    m.normal = defaultNormal_;
+    m.roughness = defaultRough_;
+    m.valid = false;
+  };
+  assignDefault(groundMat_);
+  assignDefault(rockMat_);
+  assignDefault(pathMat_);
+  assignDefault(stalkMat_);
+  matFlags_ = 0;
   return true;
+}
+
+void VulkanContext::destroyMaterialOwned(MaterialGpu& m) {
+  if (m.albedo.image && m.albedo.image != defaultAlbedo_.image) destroyTexture(m.albedo);
+  if (m.normal.image && m.normal.image != defaultNormal_.image) destroyTexture(m.normal);
+  if (m.roughness.image && m.roughness.image != defaultRough_.image) destroyTexture(m.roughness);
+  m = {};
+}
+
+void VulkanContext::bindMaterialOrDefault(const MaterialGpu& m, VkDescriptorImageInfo& iAlb,
+                                          VkDescriptorImageInfo& iNrm,
+                                          VkDescriptorImageInfo& iRgh) const {
+  const GpuTexture* alb = (m.valid && m.albedo.view) ? &m.albedo : &defaultAlbedo_;
+  const GpuTexture* nrm = (m.valid && m.normal.view) ? &m.normal : &defaultNormal_;
+  const GpuTexture* rgh = (m.valid && m.roughness.view) ? &m.roughness : &defaultRough_;
+  iAlb = {alb->sampler, alb->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  iNrm = {nrm->sampler, nrm->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  iRgh = {rgh->sampler, rgh->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 }
 
 VkCommandBuffer VulkanContext::beginOneTimeCommands() const {
@@ -816,34 +841,67 @@ bool VulkanContext::createTextureFromGrey(const std::vector<uint8_t>& grey, int 
 }
 
 void VulkanContext::updateMaterialDescriptors() {
-  GpuTexture* alb = terrainMat_.albedo.view ? &terrainMat_.albedo : &defaultAlbedo_;
-  GpuTexture* nrm = terrainMat_.normal.view ? &terrainMat_.normal : &defaultNormal_;
-  GpuTexture* rgh = terrainMat_.roughness.view ? &terrainMat_.roughness : &defaultRough_;
   for (int i = 0; i < kMaxFrames; ++i) {
     VkDescriptorBufferInfo ubo{uniformBuffers_[i].buffer, 0, sizeof(FrameUBO)};
     VkDescriptorBufferInfo ssbo{foliageInstanceBuf_.buffer, 0, VK_WHOLE_SIZE};
-    VkDescriptorImageInfo iAlb{alb->sampler, alb->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo iNrm{nrm->sampler, nrm->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo iRgh{rgh->sampler, rgh->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    VkDescriptorImageInfo gAlb{}, gNrm{}, gRgh{};
+    VkDescriptorImageInfo rAlb{}, rNrm{}, rRgh{};
+    VkDescriptorImageInfo pAlb{}, pNrm{}, pRgh{};
+    VkDescriptorImageInfo sAlb{}, sNrm{}, sRgh{};
+    bindMaterialOrDefault(groundMat_, gAlb, gNrm, gRgh);
+    bindMaterialOrDefault(rockMat_, rAlb, rNrm, rRgh);
+    bindMaterialOrDefault(pathMat_, pAlb, pNrm, pRgh);
+    bindMaterialOrDefault(stalkMat_, sAlb, sNrm, sRgh);
+
+    std::array<VkWriteDescriptorSet, 14> writes{};
     auto fill = [&](int idx, uint32_t binding, VkDescriptorType type, const void* pBuf,
                     const VkDescriptorImageInfo* pImg) {
-      writes[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[idx].dstSet = descSets_[i];
-      writes[idx].dstBinding = binding;
-      writes[idx].descriptorType = type;
-      writes[idx].descriptorCount = 1;
-      if (pBuf) writes[idx].pBufferInfo = static_cast<const VkDescriptorBufferInfo*>(pBuf);
-      if (pImg) writes[idx].pImageInfo = pImg;
+      writes[static_cast<size_t>(idx)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[static_cast<size_t>(idx)].dstSet = descSets_[i];
+      writes[static_cast<size_t>(idx)].dstBinding = binding;
+      writes[static_cast<size_t>(idx)].descriptorType = type;
+      writes[static_cast<size_t>(idx)].descriptorCount = 1;
+      if (pBuf) writes[static_cast<size_t>(idx)].pBufferInfo =
+                    static_cast<const VkDescriptorBufferInfo*>(pBuf);
+      if (pImg) writes[static_cast<size_t>(idx)].pImageInfo = pImg;
     };
     fill(0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &ubo, nullptr);
     fill(1, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &ssbo, nullptr);
-    fill(2, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iAlb);
-    fill(3, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iNrm);
-    fill(4, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iRgh);
+    fill(2, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &gAlb);
+    fill(3, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &gNrm);
+    fill(4, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &gRgh);
+    fill(5, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &rAlb);
+    fill(6, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &rNrm);
+    fill(7, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &rRgh);
+    fill(8, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &pAlb);
+    fill(9, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &pNrm);
+    fill(10, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &pRgh);
+    fill(11, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sAlb);
+    fill(12, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sNrm);
+    fill(13, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &sRgh);
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
+}
+
+bool VulkanContext::loadMaterialSet(const std::string& basePath, MaterialGpu& out) {
+  if (device_ == VK_NULL_HANDLE || basePath.empty()) return false;
+  ImageData alb, nrm, roughImg;
+  if (!loadImage(basePath + "_albedo.png", alb)) return false;
+  if (!loadImage(basePath + "_normal.png", nrm)) return false;
+  if (!loadImage(basePath + "_roughness.png", roughImg)) return false;
+
+  destroyMaterialOwned(out);
+
+  if (!createTextureFromRgba(alb.pixels, alb.width, alb.height, true, out.albedo)) return false;
+  if (!createTextureFromRgba(nrm.pixels, nrm.width, nrm.height, false, out.normal)) return false;
+  std::vector<uint8_t> grey(static_cast<size_t>(roughImg.width * roughImg.height));
+  for (int i = 0; i < roughImg.width * roughImg.height; ++i)
+    grey[static_cast<size_t>(i)] = roughImg.pixels[static_cast<size_t>(i) * 4];
+  if (!createTextureFromGrey(grey, roughImg.width, roughImg.height, out.roughness)) return false;
+
+  out.valid = true;
+  return true;
 }
 
 bool VulkanContext::loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
@@ -854,25 +912,35 @@ bool VulkanContext::loadTerrainMaterial(const std::string& albedoPath, const std
   if (!loadImage(normalPath, nrm)) return false;
   if (!loadImage(roughnessPath, roughImg)) return false;
 
-  // Don't destroy defaults if shared pointers - terrain mat owns separate textures
-  if (terrainMat_.valid) {
-    if (terrainMat_.albedo.image != defaultAlbedo_.image) destroyTexture(terrainMat_.albedo);
-    if (terrainMat_.normal.image != defaultNormal_.image) destroyTexture(terrainMat_.normal);
-    if (terrainMat_.roughness.image != defaultRough_.image) destroyTexture(terrainMat_.roughness);
-  }
+  destroyMaterialOwned(groundMat_);
 
-  if (!createTextureFromRgba(alb.pixels, alb.width, alb.height, true, terrainMat_.albedo)) return false;
-  if (!createTextureFromRgba(nrm.pixels, nrm.width, nrm.height, false, terrainMat_.normal)) return false;
-  // roughness: use R channel expanded
+  if (!createTextureFromRgba(alb.pixels, alb.width, alb.height, true, groundMat_.albedo)) return false;
+  if (!createTextureFromRgba(nrm.pixels, nrm.width, nrm.height, false, groundMat_.normal)) return false;
   std::vector<uint8_t> grey(static_cast<size_t>(roughImg.width * roughImg.height));
   for (int i = 0; i < roughImg.width * roughImg.height; ++i)
     grey[static_cast<size_t>(i)] = roughImg.pixels[static_cast<size_t>(i) * 4];
-  if (!createTextureFromGrey(grey, roughImg.width, roughImg.height, terrainMat_.roughness)) return false;
+  if (!createTextureFromGrey(grey, roughImg.width, roughImg.height, groundMat_.roughness)) return false;
 
-  terrainMat_.valid = true;
+  groundMat_.valid = true;
+  matFlags_ |= kMatGround;
   updateMaterialDescriptors();
-  logInfo("Terrain PBR material loaded from Grok pipeline maps");
+  logInfo("Terrain ground PBR material loaded");
   return true;
+}
+
+bool VulkanContext::loadBiomeMaterials(const std::string& groundBase, const std::string& rockBase,
+                                       const std::string& pathBase, const std::string& stalkBase) {
+  if (device_ == VK_NULL_HANDLE) return false;
+  int flags = 0;
+  if (!groundBase.empty() && loadMaterialSet(groundBase, groundMat_)) flags |= kMatGround;
+  if (!rockBase.empty() && loadMaterialSet(rockBase, rockMat_)) flags |= kMatRock;
+  if (!pathBase.empty() && loadMaterialSet(pathBase, pathMat_)) flags |= kMatPath;
+  if (!stalkBase.empty() && loadMaterialSet(stalkBase, stalkMat_)) flags |= kMatStalk;
+  matFlags_ = flags;
+  updateMaterialDescriptors();
+  logInfo("Biome materials loaded flags=" + std::to_string(flags) +
+          " (1=ground 2=rock 4=path 8=stalk)");
+  return flags != 0;
 }
 
 bool VulkanContext::uploadTerrain(const std::vector<VertexPC>& verts,

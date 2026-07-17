@@ -68,13 +68,14 @@ void Application::createCrystalScene() {
   auto cpuTerrain = buildTerrainMesh(ctx_.height, segs, 200.f, 0.f, 0.f, 0.45f);
   vulkan_.uploadTerrain(cpuTerrain.vertices, cpuTerrain.indices);
 
-  // Grok PBR maps (run bolt_grok_import offline first) — triplanar on terrain
+  // Crystal biome multi-material pack (ground / rock / path / stalk)
   {
-    const std::string base = "assets/materials/crystal_nebula/crystal_ground";
-    const bool ok = vulkan_.loadTerrainMaterial(
-        base + "_albedo.png", base + "_normal.png", base + "_roughness.png");
-    if (ok) logInfo("Crystal ground PBR active (Grok/triplanar)");
-    else logWarn("No crystal_ground PBR maps yet — procedural colors. Run: scripts/run_grok_pipeline.ps1");
+    const std::string dir = "assets/materials/crystal_nebula/";
+    const bool ok = vulkan_.loadBiomeMaterials(
+        dir + "crystal_ground", dir + "crystal_rock", dir + "crystal_path",
+        dir + "crystal_stalk");
+    if (ok) logInfo("Crystal biome multi-material active (ground+rock+path+stalk)");
+    else logWarn("No crystal biome PBR maps — procedural. Run: scripts/run_grok_pipeline.ps1");
   }
 
   // Stalk mesh for instances
@@ -213,10 +214,10 @@ void Application::render() {
   FrameUBO ubo{};
   ubo.viewProj = proj * view;
   ubo.cameraPos_time = glm::vec4(eye, static_cast<float>(time_.elapsed));
-  ubo.sprintScore_flags =
-      glm::vec4(ctx_.sprint.score, vulkan_.hasTerrainTextures() ? 1.f : 0.f, 0.f, 0.f);
-  // Finer triplanar scale = less obvious big tiles
-  ubo.tiling_pad = glm::vec4(0.035f, 0.f, 0.f, 0.f);
+  // y = material bitflags from loaded biome pack
+  ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, vulkan_.materialFlags(), 0.f, 0.f);
+  // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
+  ubo.tiling_pad = glm::vec4(0.035f, 5.5f, 3.2f, 4.0f);
 
   vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()));
 }

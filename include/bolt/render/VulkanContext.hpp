@@ -15,14 +15,26 @@ namespace bolt {
 struct FrameUBO {
   glm::mat4 viewProj;
   glm::vec4 cameraPos_time;     // xyz cam, w time
-  glm::vec4 sprintScore_flags;  // x score, y hasTerrainTex
-  glm::vec4 tiling_pad;         // x tiling
+  // x = sprint score
+  // y = material bitflags: 1=ground 2=rock 4=path 8=stalk
+  // z/w reserved
+  glm::vec4 sprintScore_flags;
+  // x = triplanar tiling, y = path half-width, z = path edge falloff, w = path meander amp
+  glm::vec4 tiling_pad;
+};
+
+/** Material bitflags for FrameUBO::sprintScore_flags.y */
+enum MaterialFlags : int {
+  kMatGround = 1,
+  kMatRock = 2,
+  kMatPath = 4,
+  kMatStalk = 8,
 };
 
 /**
  * Vulkan device + swapchain + Crystal renderer.
- * Terrain: HeightField mesh + optional PBR triplanar (albedo/normal/roughness).
- * Foliage: instanced stalks.
+ * Terrain: HeightField mesh + multi-material triplanar (ground/rock/path blend).
+ * Foliage: instanced stalks with stalk material.
  */
 class VulkanContext {
 public:
@@ -38,15 +50,24 @@ public:
   bool uploadStalkMesh(const std::vector<VertexPC>& verts, const std::vector<uint32_t>& indices);
   bool uploadFoliage(const std::vector<FoliageInstanceGPU>& instances);
 
-  /** Load PBR set (RGBA8 albedo/normal, R8 roughness). Empty path = skip. */
+  /** Load single PBR set into ground slot (legacy helper). */
   bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
                            const std::string& roughnessPath);
+
+  /**
+   * Load Crystal biome pack from material base paths (no extension):
+   *   .../crystal_ground, .../crystal_rock, .../crystal_path, .../crystal_stalk
+   * Empty string skips that layer.
+   */
+  bool loadBiomeMaterials(const std::string& groundBase, const std::string& rockBase,
+                          const std::string& pathBase, const std::string& stalkBase);
 
   void drawFrame(const FrameUBO& ubo, uint32_t foliageCount);
 
   std::uint32_t frameIndex() const { return frameIndex_; }
   VkDevice device() const { return device_; }
-  bool hasTerrainTextures() const { return terrainMat_.valid; }
+  bool hasTerrainTextures() const { return groundMat_.valid; }
+  float materialFlags() const { return static_cast<float>(matFlags_); }
 
 private:
   bool createInstance();
@@ -80,6 +101,10 @@ private:
   VkCommandBuffer beginOneTimeCommands() const;
   void endOneTimeCommands(VkCommandBuffer cmd) const;
   bool createDefault1x1Textures();
+  bool loadMaterialSet(const std::string& basePath, MaterialGpu& out);
+  void destroyMaterialOwned(MaterialGpu& m);
+  void bindMaterialOrDefault(const MaterialGpu& m, VkDescriptorImageInfo& iAlb,
+                             VkDescriptorImageInfo& iNrm, VkDescriptorImageInfo& iRgh) const;
 
   bool valid_ = false;
   GLFWwindow* window_ = nullptr;
@@ -133,7 +158,12 @@ private:
   uint32_t foliageCapacity_ = 0;
   uint32_t foliageCount_ = 0;
 
-  MaterialGpu terrainMat_{};
+  MaterialGpu groundMat_{};
+  MaterialGpu rockMat_{};
+  MaterialGpu pathMat_{};
+  MaterialGpu stalkMat_{};
+  int matFlags_ = 0;
+
   GpuTexture defaultAlbedo_{};
   GpuTexture defaultNormal_{};
   GpuTexture defaultRough_{};

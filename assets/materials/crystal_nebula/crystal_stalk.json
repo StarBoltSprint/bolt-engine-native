@@ -1,0 +1,14 @@
+{
+  "name": "crystal_stalk",
+  "albedo": "crystal_stalk_albedo.png",
+  "normal": "crystal_stalk_normal.png",
+  "roughness": "crystal_stalk_roughness.png",
+  "metallic": "crystal_stalk_metallic.png",
+  "height": "crystal_stalk_height.png",
+  "tiling": 5.0,
+  "detailTiling": 18.0,
+  "triplanar": true,
+  "hotReload": true,
+  "source": "grok_imagine",
+  "pipeline": "luma_height_sobel_normal_v1"
+}

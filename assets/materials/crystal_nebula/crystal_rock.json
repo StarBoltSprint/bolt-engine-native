@@ -1,0 +1,14 @@
+{
+  "name": "crystal_rock",
+  "albedo": "crystal_rock_albedo.png",
+  "normal": "crystal_rock_normal.png",
+  "roughness": "crystal_rock_roughness.png",
+  "metallic": "crystal_rock_metallic.png",
+  "height": "crystal_rock_height.png",
+  "tiling": 5.0,
+  "detailTiling": 18.0,
+  "triplanar": true,
+  "hotReload": true,
+  "source": "grok_imagine",
+  "pipeline": "luma_height_sobel_normal_v1"
+}

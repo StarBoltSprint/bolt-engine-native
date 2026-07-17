@@ -1,10 +1,14 @@
 {
   "name": "crystal_path",
   "albedo": "crystal_path_albedo.png",
-  "emissive": "crystal_path_emissive.png",
+  "normal": "crystal_path_normal.png",
   "roughness": "crystal_path_roughness.png",
   "metallic": "crystal_path_metallic.png",
-  "tiling": 2.0,
+  "height": "crystal_path_height.png",
+  "tiling": 5.0,
+  "detailTiling": 18.0,
   "triplanar": true,
-  "hotReload": true
+  "hotReload": true,
+  "source": "grok_imagine",
+  "pipeline": "luma_height_sobel_normal_v1"
 }

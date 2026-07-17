@@ -7,47 +7,49 @@ Convert **Grok Imagine** concept images into **natural integrated** PBR material
 ## Offline flow
 
 ```
-1. Prompt Grok Imagine for seamless / tileable surface
-   e.g. "seamless top-down crystal nebula teal moss and quartz ground, no characters, tileable"
+1. Prompt Grok Imagine for seamless / tileable surfaces (same biome palette)
+   ground / path / rock / stalk under crystal_nebula
 
-2. Save PNG → assets/grok_inbox/crystal_ground_albedo_src.png
+2. Save PNG → assets/grok_inbox/crystal_*_src.png
 
-3. Run tool (or `scripts/run_grok_pipeline.ps1`):
-   bolt_grok_import --in assets/grok_inbox/crystal_ground_sample.png ^
-                    --out assets/materials/crystal_nebula ^
-                    --name crystal_ground
+3. Run pack import:
+   scripts/run_grok_pipeline.ps1
+   (or bolt_grok_import --in ... --out assets/materials/crystal_nebula --name crystal_ground)
 
-4. Tool **really generates**:
-   crystal_ground_albedo.png     (from Imagine)
-   crystal_ground_height.png     (luma → height)
-   crystal_ground_normal.png     (Sobel from height)
-   crystal_ground_roughness.png  (derived)
-   crystal_ground_metallic.png   (derived)
-   crystal_ground.json           (MaterialLibrary / engine manifest)
+4. Tool generates per name:
+   name_albedo / height / normal / roughness / metallic.png + name.json
 
-5. Runtime: `VulkanContext::loadTerrainMaterial` uploads maps; terrain.frag
-   samples them with **triplanar** mapping on HeightField geometry.
-
-5. Runtime MaterialLibrary hot-reloads when ground.json or maps change
+5. Runtime: VulkanContext::loadBiomeMaterials loads ground+rock+path+stalk;
+   terrain.frag blends path ribbon + slope rock over ground triplanar;
+   foliage.frag samples stalk maps on instances.
 ```
+
+## Crystal Nebula pack
+
+| Name | Role |
+|------|------|
+| `crystal_ground` | Base terrain triplanar |
+| `crystal_rock` | Slope / cliff mix (by normal.y) |
+| `crystal_path` | Soft S-curve sprint ribbon (world-space mask) |
+| `crystal_stalk` | Foliage instance material |
 
 ## Making it look natural on procedural meshes
 
 | Technique | Why |
 |-----------|-----|
 | **Triplanar mapping** | No obvious UV seams on noise terrain |
-| **Height blend** | Mix grass/crystal by height & slope |
+| **Slope rock mix** | Hard mineral on steep faces |
+| **Path ribbon mask** | Readable sprint corridor without painted geometry |
 | **Detail normal** | Second tiling scale breaks repetition at sprint speed |
 | **Roughness variation** | Avoid plastic flat look |
-| **Emissive mask (optional)** | Crystal veins only — never full-surface neon |
-
-Shader responsibility: `terrain.frag.glsl` samples MaterialLibrary sets with triplanar + sprint-driven detail scale.
+| **Emissive tip (stalks)** | Crystal glow only on tips / kinds |
 
 ## Quality tips for Imagine prompts
 
 - Always ask for **seamless / tileable**, orthographic or top-down for ground  
-- Separate **albedo** (color only, soft lighting) from **height** (grayscale) when possible  
-- Generate **bark** and **crystal stalk** as separate material sets  
+- Keep **one palette** — edit path/rock/stalk from the ground reference  
+- Path: uniform surface (no baked center stripe — engine applies the ribbon mask)  
+- Separate **bark** / **stalk** as their own material sets  
 
 ## Integration with ECS
 
