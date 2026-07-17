@@ -39,6 +39,11 @@ bool Application::init() {
     if (!app) return;
     if (key == GLFW_KEY_F11 || key == GLFW_KEY_F) app->toggleFullscreen();
   });
+  glfwSetScrollCallback(window_, [](GLFWwindow* w, double /*xoff*/, double yoff) {
+    auto* app = static_cast<Application*>(glfwGetWindowUserPointer(w));
+    if (!app) return;
+    app->adjustCamZoom(static_cast<float>(yoff));
+  });
 
   materials_.setRoot("assets");
   materials_.scanAndLoad();
@@ -54,8 +59,12 @@ bool Application::init() {
   ctx_.sprint.score = 0.5f;
 
   createCrystalScene();
+  // Default ¾ orbit so Bolt reads well on first frame
+  camOrbitYaw_ = 0.65f;
+  camOrbitPitch_ = 0.28f;
+  camDist_ = boltFullMesh_ ? 7.5f : 9.f;
   running_ = true;
-  logInfo("Application ready — Crystal Nebula (WASD move, Shift sprint, F11 fullscreen, Esc quit)");
+  logInfo("Application ready — WASD move, Shift sprint, RMB orbit camera, scroll zoom, F11 fullscreen");
   return true;
 }
 
@@ -209,14 +218,36 @@ void Application::createCrystalScene() {
 void Application::fixedUpdate(float dt) {
   double mx, my;
   glfwGetCursorPos(window_, &mx, &my);
-  // Simple mouse look when right button held
-  static double lastX = mx, lastY = my;
-  if (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-    float dx = static_cast<float>(mx - lastX) * 0.004f;
-    ctx_.sprint.yaw += dx;
+
+  // RMB free orbit (yaw + pitch) — was locked ¾ chase; now fully steerable
+  const bool rmb = glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+  if (rmb) {
+    if (!mouseLookActive_) {
+      mouseLookActive_ = true;
+      mouseLastX_ = mx;
+      mouseLastY_ = my;
+    }
+    const float dx = static_cast<float>(mx - mouseLastX_) * 0.0055f;
+    const float dy = static_cast<float>(my - mouseLastY_) * 0.0055f;
+    camOrbitYaw_ += dx;
+    camOrbitPitch_ += dy;
+    camOrbitPitch_ = std::clamp(camOrbitPitch_, -0.15f, 1.25f); // avoid flip under ground
+    mouseLastX_ = mx;
+    mouseLastY_ = my;
+  } else {
+    mouseLookActive_ = false;
+    mouseLastX_ = mx;
+    mouseLastY_ = my;
   }
-  lastX = mx;
-  lastY = my;
+
+  // Scroll zoom
+  // (polled via glfwSetScrollCallback would be cleaner; use keys as reliable backup)
+  if (glfwGetKey(window_, GLFW_KEY_EQUAL) == GLFW_PRESS ||
+      glfwGetKey(window_, GLFW_KEY_KP_ADD) == GLFW_PRESS)
+    camDist_ = std::max(3.5f, camDist_ - 8.f * dt);
+  if (glfwGetKey(window_, GLFW_KEY_MINUS) == GLFW_PRESS ||
+      glfwGetKey(window_, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS)
+    camDist_ = std::min(22.f, camDist_ + 8.f * dt);
 
   auto view = registry_.view<Velocity, Transform, PlayerTag>();
   for (auto e : view) {
@@ -230,10 +261,9 @@ void Application::fixedUpdate(float dt) {
     ctx_.sprint.sprinting = glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
                             glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
     if (glm::length(wish) > 1e-4f) wish = glm::normalize(wish);
-    const float yaw = ctx_.sprint.yaw;
-    const float s = std::sin(yaw), c = std::cos(yaw);
-    // wish.z forward, wish.x right in local — map to world XZ
-    glm::vec3 worldWish{wish.x * c + wish.z * s, 0.f, -wish.x * s + wish.z * c};
+    // Move relative to camera flat yaw (W = into look direction on ground)
+    const float fs = std::sin(camOrbitYaw_), fc = std::cos(camOrbitYaw_);
+    glm::vec3 worldWish{wish.x * fc + wish.z * (-fs), 0.f, -wish.x * fs + wish.z * (-fc)};
     const float acc = ctx_.sprint.sprinting ? 48.f : 22.f;
     vel.linear.x += worldWish.x * acc * dt;
     vel.linear.z += worldWish.z * acc * dt;
@@ -251,6 +281,16 @@ void Application::fixedUpdate(float dt) {
     // Eye/body height ~1.1 above feet; mesh feet sit on ground in render()
     tr.position.y = ctx_.height.sample(tr.position.x, tr.position.z, ctx_.sprint.score) + 1.1f;
     vel.linear.y = 0.f;
+
+    // Face movement direction (dog turns to run, camera orbits freely)
+    const float spH = std::sqrt(vel.linear.x * vel.linear.x + vel.linear.z * vel.linear.z);
+    if (spH > 0.8f) {
+      const float faceYaw = std::atan2(vel.linear.x, vel.linear.z);
+      float dy = faceYaw - ctx_.sprint.yaw;
+      while (dy > 3.14159f) dy -= 6.28318f;
+      while (dy < -3.14159f) dy += 6.28318f;
+      ctx_.sprint.yaw += dy * std::min(1.f, 10.f * dt);
+    }
 
     ctx_.sprint.position = tr.position;
     ctx_.sprint.velocity = vel.linear;
@@ -367,21 +407,23 @@ void Application::frameUpdate(float dt) {
 }
 
 void Application::render() {
-  // ¾ chase cam — side + back, lower height so full silhouette reads
-  const float yaw = ctx_.sprint.yaw;
-  const float sy = std::sin(yaw), cy = std::cos(yaw);
-  // forward = (sy, 0, cy), right = (cy, 0, -sy)
-  const float camBack = boltFullMesh_ ? 6.5f : 8.f;
-  const float camSide = boltFullMesh_ ? 4.2f : 3.5f;
-  const float camH = boltFullMesh_ ? 2.6f : 3.5f;
-  const glm::vec3 forward(sy, 0.f, cy);
-  const glm::vec3 right(cy, 0.f, -sy);
-  const glm::vec3 eye = ctx_.sprint.position - forward * camBack + right * camSide +
-                        glm::vec3(0.f, camH, 0.f);
-  const glm::vec3 target = ctx_.sprint.position + forward * 1.8f + glm::vec3(0.f, 0.95f, 0.f);
+  // Free orbit camera around Bolt (RMB steers camOrbitYaw_/Pitch_, scroll via +/-)
+  const float groundY =
+      ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
+  const glm::vec3 focus = glm::vec3(ctx_.sprint.position.x, groundY + 0.95f, ctx_.sprint.position.z);
+
+  const float cp = std::cos(camOrbitPitch_);
+  const float sp = std::sin(camOrbitPitch_);
+  const float sy = std::sin(camOrbitYaw_);
+  const float cy = std::cos(camOrbitYaw_);
+  // Spherical offset: yaw around Y, pitch from horizontal
+  const glm::vec3 offset(sy * cp * camDist_, sp * camDist_, cy * cp * camDist_);
+  const glm::vec3 eye = focus + offset;
+  const glm::vec3 target = focus;
+
   const float aspect = height_ > 0 ? width_ / static_cast<float>(height_) : 16.f / 9.f;
   glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0, 1, 0));
-  glm::mat4 proj = glm::perspective(glm::radians(55.f), aspect, 0.15f, 520.f);
+  glm::mat4 proj = glm::perspective(glm::radians(55.f), aspect, 0.12f, 520.f);
   proj[1][1] *= -1.f; // Vulkan Y flip
 
   const glm::mat4 viewProj = proj * view;
@@ -392,9 +434,8 @@ void Application::render() {
   ubo.sprintScore_flags = glm::vec4(ctx_.sprint.score, vulkan_.materialFlags(), 0.f, 0.f);
   ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
-  // Root transform — imported mesh normalized ~2m; extra scale for screen presence
-  const float groundY =
-      ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
+  // Dog faces sprint.yaw (movement); camera orbits independently
+  const float yaw = ctx_.sprint.yaw;
   glm::mat4 root(1.f);
   root = glm::translate(root, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
   root = glm::rotate(root, yaw, glm::vec3(0.f, 1.f, 0.f));

@@ -1,5 +1,6 @@
 #pragma once
 #include <entt/entt.hpp>
+#include <algorithm>
 #include <vector>
 #include "bolt/core/Time.hpp"
 #include "bolt/ecs/Systems.hpp"
@@ -28,6 +29,9 @@ public:
   void shutdown();
   void onResize(int w, int h);
   void toggleFullscreen();
+  void adjustCamZoom(float delta) {
+    camDist_ = std::clamp(camDist_ - delta * 0.85f, 3.5f, 22.f);
+  }
 
 private:
   void createCrystalScene();
@@ -54,6 +58,14 @@ private:
   bool running_ = false;
   int width_ = 1280;
   int height_ = 720;
+
+  // Free orbit camera around Bolt (RMB drag + scroll zoom)
+  float camOrbitYaw_ = 0.55f;   // radians — start slightly to the side (¾)
+  float camOrbitPitch_ = 0.32f; // look down a bit
+  float camDist_ = 8.5f;
+  double mouseLastX_ = 0.0;
+  double mouseLastY_ = 0.0;
+  bool mouseLookActive_ = false;
 
   // Streaming terrain patch (follows Bolt so ground never “ends”)
   float terrainOriginX_ = 0.f;
