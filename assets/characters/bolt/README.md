@@ -1,24 +1,21 @@
 # StarBoltSprint — Pure White German Shepherd
 
-Imagine character pack for native Bolt Engine.
+## Correct pipeline (same as crystal terrain)
 
-## Files
-
-| File | Role |
+| Step | Bolt |
 |------|------|
-| `bolt_base.jpg` | Hero ¾ identity lock |
-| `bolt_side.jpg` | Side profile turnaround |
-| `bolt_front.jpg` | Front turnaround |
-| `bolt_back.jpg` | Back turnaround |
-| `bolt_sprint.jpg` | Sprint pose |
-| `bolt_billboard_src.jpg` | In-game billboard source (chroma magenta) |
-| `bolt_fur_src.jpg` | Seamless fur tile source |
+| **Geometry** | Procedural 3D GSD mesh (`buildBoltMesh`) — body, head, legs, tail, ears |
+| **Imagine** | Seamless pure-white fur tile → `bolt_fur_src` |
+| **Offline** | `bolt_grok_import` → `assets/materials/bolt/bolt_fur_*` PBR |
+| **Vulkan** | Triplanar fur albedo/normal/roughness on mesh + cyan energy eyes |
 
-Fur PBR (imported): `assets/materials/bolt/bolt_fur_*`
+**Not** a 2D billboard. Character art turnarounds (`bolt_base.jpg` etc.) are identity reference only.
 
 ## Runtime
 
-Engine loads `bolt_billboard_src` with **magenta chroma key** → transparent sprite card  
-plus `bolt_fur` albedo for micro-detail on the card.
+```
+loadBoltFurPBR("assets/materials/bolt/bolt_fur")
+uploadBoltMesh(buildBoltMesh(...))
+```
 
-Magenta background must stay pure for clean keys (`#C2185B` family).
+Material regions on mesh (UV.x): fur | eye/energy | nose | ear-inner | pad

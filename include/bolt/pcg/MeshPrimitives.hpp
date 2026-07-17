@@ -7,14 +7,11 @@ namespace bolt {
 /** Soft contact-shadow disc (XZ unit quad, UV for radial falloff). */
 void buildShadowBlobMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIndices);
 
-/** Simple pure-white Bolt silhouette (capsule body + head) — legacy scale placeholder. */
-void buildBoltMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIndices);
-
 /**
- * Vertical card for Imagine GSD billboard (feet at y=0, faces +Z).
- * width/height in meters; UV covers full sprite.
+ * StarBoltSprint — procedural pure-white German Shepherd mesh.
+ * Feet at y≈0, faces +Z (sprint forward). UV.x = material id:
+ *   0 = fur, 1 = eye/energy, 2 = nose, 3 = ear-inner, 4 = pad
  */
-void buildBoltBillboardMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIndices,
-                            float width = 1.55f, float height = 1.55f);
+void buildBoltMesh(std::vector<VertexPC>& outVerts, std::vector<uint32_t>& outIndices);
 
 } // namespace bolt

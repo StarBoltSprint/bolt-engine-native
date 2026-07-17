@@ -137,7 +137,7 @@ void Application::createCrystalScene() {
   buildStalkMesh(stalkV, stalkI);
   vulkan_.uploadStalkMesh(stalkV, stalkI);
 
-  // Soft shadow blob disc + pure white GSD billboard (Imagine)
+  // Soft shadow blob disc + 3D GSD mesh with fur PBR (Imagine → grok_import)
   {
     std::vector<VertexPC> bv;
     std::vector<uint32_t> bi;
@@ -147,15 +147,13 @@ void Application::createCrystalScene() {
   {
     std::vector<VertexPC> bv;
     std::vector<uint32_t> bi;
-    buildBoltBillboardMesh(bv, bi, 1.65f, 1.65f);
+    buildBoltMesh(bv, bi);
     vulkan_.uploadBoltMesh(bv, bi);
   }
   {
-    const bool ok = vulkan_.loadBoltCharacter(
-        "assets/characters/bolt/bolt_billboard_src.jpg",
-        "assets/materials/bolt/bolt_fur_albedo.png");
-    if (ok) logInfo("StarBoltSprint white GSD character active (Imagine billboard + fur)");
-    else logWarn("Bolt character textures missing under assets/characters/bolt/");
+    const bool ok = vulkan_.loadBoltFurPBR("assets/materials/bolt/bolt_fur");
+    if (ok) logInfo("StarBoltSprint 3D GSD + fur PBR active (Imagine materials on mesh)");
+    else logWarn("Bolt fur PBR missing — run grok import for assets/materials/bolt/bolt_fur");
   }
 
   // Initial foliage batch around spawn
@@ -377,24 +375,21 @@ void Application::render() {
   // x=tiling y=pathHalfWidth z=pathEdge w=meanderAmp
   ubo.tiling_pad = glm::vec4(0.032f, 5.5f, 3.2f, 4.0f);
 
-  // GSD billboard: feet on ground, yaw-aligned (+Z face of card)
+  // 3D GSD: feet on ground, faces +Z, yaw-aligned
   ObjectPush boltPush{};
   const float groundY =
       ctx_.height.sample(ctx_.sprint.position.x, ctx_.sprint.position.z, ctx_.sprint.score);
   glm::mat4 model(1.f);
-  model = glm::translate(model, glm::vec3(ctx_.sprint.position.x, groundY + 0.02f,
-                                         ctx_.sprint.position.z));
+  model = glm::translate(model, glm::vec3(ctx_.sprint.position.x, groundY, ctx_.sprint.position.z));
   model = glm::rotate(model, yaw, glm::vec3(0.f, 1.f, 0.f));
-  // Subtle sprint lean into run
   if (ctx_.sprint.sprinting) {
-    model = glm::rotate(model, -0.08f * ctx_.sprint.momentum, glm::vec3(1.f, 0.f, 0.f));
+    model = glm::rotate(model, -0.1f * ctx_.sprint.momentum, glm::vec3(1.f, 0.f, 0.f));
   }
-  // Match web game presence (~2u scale)
-  const float sc = 1.85f;
-  model = glm::scale(model, glm::vec3(sc));
+  // Match web game scale (~1.95)
+  model = glm::scale(model, glm::vec3(1.55f));
   boltPush.model = model;
-  // w = energy boost for cyan rim (sprint momentum)
-  boltPush.color = glm::vec4(1.f, 1.f, 1.f, 0.15f + ctx_.sprint.momentum * 0.55f);
+  // w = energy for cyan eyes / rim (sprint momentum)
+  boltPush.color = glm::vec4(1.f, 1.f, 1.f, 0.2f + ctx_.sprint.momentum * 0.65f);
 
   vulkan_.drawFrame(ubo, static_cast<uint32_t>(foliageCpu_.size()), boltPush,
                     static_cast<uint32_t>(particleGpu_.size()));

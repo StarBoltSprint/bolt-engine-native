@@ -55,11 +55,11 @@ public:
   bool uploadParticles(const std::vector<ParticleGPU>& particles);
 
   /**
-   * Pure white GSD: Imagine sprite (magenta chroma-keyed) + fur albedo micro-detail.
-   * spritePath / furAlbedoPath empty = skip that map.
+   * Load bolt_fur PBR set (Imagine → grok_import) onto the 3D GSD mesh.
+   * basePath e.g. assets/materials/bolt/bolt_fur (no extension).
    */
-  bool loadBoltCharacter(const std::string& spritePath, const std::string& furAlbedoPath);
-  bool hasBoltSprite() const { return boltSpriteValid_; }
+  bool loadBoltFurPBR(const std::string& furBasePath);
+  bool hasBoltFur() const { return boltFurValid_; }
 
   /** Load single PBR set into ground slot (legacy helper). */
   bool loadTerrainMaterial(const std::string& albedoPath, const std::string& normalPath,
@@ -108,7 +108,7 @@ private:
                              bool clampToEdge = false);
   bool createTextureFromGrey(const std::vector<uint8_t>& grey, int w, int h, GpuTexture& out);
   void destroyTexture(GpuTexture& t);
-  static void chromaKeyMagenta(std::vector<uint8_t>& rgba, int w, int h);
+
   bool transitionImage(VkImage image, VkImageLayout oldL, VkImageLayout newL);
   bool copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w, uint32_t h);
   VkShaderModule loadShaderModule(const std::string& path) const;
@@ -193,9 +193,9 @@ private:
   GpuTexture defaultAlbedo_{};
   GpuTexture defaultNormal_{};
   GpuTexture defaultRough_{};
-  GpuTexture boltSprite_{};
-  GpuTexture boltFur_{};
-  bool boltSpriteValid_ = false;
+  GpuTexture boltAlbedo_{};
+  GpuTexture boltNormal_{};
+  GpuTexture boltRough_{};
   bool boltFurValid_ = false;
 
   int width_ = 1280;

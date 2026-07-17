@@ -1,9 +1,9 @@
 #version 450
-// Bolt GSD billboard card — model via push constants (yaw-aligned)
+// StarBoltSprint 3D GSD — model via push constants
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec2 inUV;
+layout(location = 2) in vec2 inUV; // x = material id, y = profile
 
 layout(set = 0, binding = 0) uniform Frame {
   mat4 viewProj;
@@ -15,19 +15,22 @@ layout(set = 0, binding = 0) uniform Frame {
 
 layout(push_constant) uniform Push {
   mat4 model;
-  vec4 color; // rgb tint + w = energy / emissive boost
+  vec4 color; // rgb unused, w = energy 0..1 (sprint)
 } uPush;
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
 layout(location = 3) out float vEnergy;
+layout(location = 4) out float vMatId;
 
 void main() {
   vec4 wp = uPush.model * vec4(inPosition, 1.0);
   vWorldPos = wp.xyz;
+  // Normal matrix (uniform scale assumed from model)
   vNormal = normalize(mat3(uPush.model) * inNormal);
   vUV = inUV;
   vEnergy = uPush.color.w;
+  vMatId = inUV.x;
   gl_Position = uFrame.viewProj * wp;
 }
