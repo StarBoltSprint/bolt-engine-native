@@ -1,6 +1,7 @@
 #version 450
-// Bolt — PBR fur + IBL + approximate SSS + emissive maps
+// Bolt — PBR fur + IBL + approximate SSS + emissive maps + volumetric fog
 #include "common_pbr.glsl"
+#include "atmos_eval.glsl"
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -16,15 +17,17 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 invViewProj;
   mat4 prevViewProj;
   vec4 taaJitter;
-  mat4 lightViewProj;
+  mat4 lightViewProj[3];
   vec4 shadowParams;
+  vec4 cascadeSplits;
+  vec4 cascadeOrigin;
 } uFrame;
 
 layout(set = 0, binding = 15) uniform sampler2D uBoltAlbedo;
 layout(set = 0, binding = 16) uniform sampler2D uBoltNormal;
 layout(set = 0, binding = 17) uniform sampler2D uBoltRough; // R rough G metal B height
 layout(set = 0, binding = 23) uniform sampler2D uBoltEmit;
-layout(set = 0, binding = 24) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 24) uniform sampler2DArray uShadowMap;
 
 struct CrystalLight {
   vec4 posRange;
@@ -208,8 +211,10 @@ void main() {
 
   float sh = 1.0;
   if (uFrame.shadowParams.z > 0.5 && matId != 5) {
-    vec3 sclip = worldToShadowClip(uFrame.lightViewProj, vWorldPos + N * 0.04);
-    sh = sampleShadowPCF(uShadowMap, sclip, uFrame.shadowParams.x, uFrame.shadowParams.w);
+    sh = sampleShadowCSM(uShadowMap, uFrame.lightViewProj[0], uFrame.lightViewProj[1],
+                         uFrame.lightViewProj[2], uFrame.cascadeOrigin.xyz,
+                         uFrame.cascadeSplits.xyz, vWorldPos, N, uFrame.shadowParams.x,
+                         uFrame.shadowParams.w);
     sh = mix(1.0, sh, uFrame.shadowParams.y);
     sh = mix(0.18, 1.0, sh); // punch ground contact shadow on body
   }
@@ -233,9 +238,15 @@ void main() {
   // Floor of solid coat (no pure black holes, no force-bright ghost)
   col = max(col, albedo * 0.08 * ao);
 
-  float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
-  float fog = 1.0 - exp(-max(0.0, dist - 50.0) * 0.001);
-  col = mix(col, vec3(0.08, 0.18, 0.28), fog * 0.1);
+  // Volumetric haze so Bolt sits in the same air as terrain/props
+  {
+    float score = uFrame.sprintScore_flags.x;
+    vec3 cam = uFrame.cameraPos_time.xyz;
+    vec3 sunDir = normalize(vec3(0.35, 0.88, 0.35));
+    vec3 fogSky = vec3(0.12, 0.08, 0.22);
+    col = applyVolumetricFogFast(col, cam, vWorldPos, sunDir, fogSky,
+                                 uFrame.cameraPos_time.w, score);
+  }
 
   outColor = vec4(col, alpha);
 }

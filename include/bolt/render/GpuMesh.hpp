@@ -21,7 +21,8 @@ struct FoliageInstanceGPU {
 };
 
 /** GPU particle — matches particle.vert Particle struct
- *  kind: 0 soft dust, 1 pawprint trail, 2 crystal spark, 3 aura spark
+ *  kind: 0 soft dust, 1 pawprint, 2 crystal spark, 3 aura,
+ *        4 near-cam dust, 5 soft cloud wisp
  */
 struct ParticleGPU {
   glm::vec4 posSize;   // xyz, w=size

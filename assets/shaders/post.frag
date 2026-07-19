@@ -147,63 +147,65 @@ void main() {
   bloom /= max(wsumB, 1e-3);
   bloom *= vec3(1.05, 0.95, 1.12);
 
-  // --- SSAO punch (stronger contact darkening under trees / Bolt / rocks) ---
+  // Mild residual AO for forward overlays only (real SSAO lives in deferred GBuffer)
+  // Depth-only reconstruction — light touch so we don't double-darken terrain
   float ao = 1.0;
   if (depth < 0.999) {
     vec3 pos = world;
-    vec3 pR = worldFromDepth(vUV + vec2(texel.x, 0.0), texture(uDepth, vUV + vec2(texel.x, 0.0)).r);
-    vec3 pU = worldFromDepth(vUV + vec2(0.0, texel.y), texture(uDepth, vUV + vec2(0.0, texel.y)).r);
+    vec3 pR = worldFromDepth(vUV + vec2(texel.x * 2.0, 0.0),
+                             texture(uDepth, vUV + vec2(texel.x * 2.0, 0.0)).r);
+    vec3 pU = worldFromDepth(vUV + vec2(0.0, texel.y * 2.0),
+                             texture(uDepth, vUV + vec2(0.0, texel.y * 2.0)).r);
     vec3 N = normalize(cross(pR - pos, pU - pos));
     float occ = 0.0;
-    const int K = 12;
+    const int K = 6;
     for (int i = 0; i < K; ++i) {
       float fi = float(i);
-      float ang = fi * 2.399963 + t * 0.55;
-      // Wider radius for readable contact under props
-      float rad = (0.55 + fract(hash21(vUV * 40.0 + fi)) * 1.75) * (0.4 + score * 0.08);
-      vec2 off = vec2(cos(ang), sin(ang)) * texel * rad * 36.0;
+      float ang = fi * 2.399963 + t * 0.4;
+      float rad = 0.45 + fract(hash21(vUV * 30.0 + fi)) * 0.9;
+      vec2 off = vec2(cos(ang), sin(ang)) * texel * rad * 22.0;
       float sd = texture(uDepth, clamp(vUV + off, vec2(0.001), vec2(0.999))).r;
       vec3 sp = worldFromDepth(vUV + off, sd);
       vec3 v = sp - pos;
       float dist = length(v);
       float nd = max(dot(N, v / max(dist, 1e-4)), 0.0);
-      float range = smoothstep(2.8, 0.1, dist);
-      occ += nd * range;
+      occ += nd * smoothstep(1.6, 0.08, dist);
     }
-    // Stronger darken floor (up to ~82% occlusion)
-    ao = 1.0 - clamp(occ / float(K) * 1.75, 0.0, 0.82);
-    ao = mix(ao, 1.0, smoothstep(0.94, 0.999, depth));
+    ao = 1.0 - clamp(occ / float(K) * 0.85, 0.0, 0.35);
+    ao = mix(ao, 1.0, smoothstep(0.92, 0.999, depth));
   }
-  // Deeper crevices / under trees / against Bolt feet
-  blurred *= mix(0.38, 1.0, ao);
+  blurred *= mix(0.78, 1.0, ao);
 
   // Mild bloom — path/crystals + sky peaks (god rays feed separately)
   float bloomStr = 0.18 + score * 0.2 + mbStr * 0.06;
   vec3 col = blurred + bloom * bloomStr;
 
-  // --- God rays (SkyGenerator-driven volumetric shafts) ---
+  // --- Depth-aware light shafts (occluded by props/terrain along the ray) ---
   vec2 sunUv = clamp(uPost.sun_ray.xy, vec2(-0.2), vec2(1.2));
-  // sun_ray.z already includes SkyGenerator godRayStrength
-  float rayStr = clamp(uPost.sun_ray.z, 0.0, 1.5) * (0.4 + score * 0.35);
+  float rayStr = clamp(uPost.sun_ray.z, 0.0, 1.5) * (0.45 + score * 0.4);
   if (rayStr > 0.02) {
-    vec2 delta = (sunUv - vUV) / 12.0;
+    const int RAY_STEPS = 16;
+    vec2 delta = (sunUv - vUV) / float(RAY_STEPS);
     vec2 uvR = vUV;
     vec3 rays = vec3(0.0);
     float decay = 1.0;
-    // Only accumulate bright samples (occlusion-ish)
-    for (int i = 0; i < 12; ++i) {
+    float surfaceD = depth;
+    for (int i = 0; i < RAY_STEPS; ++i) {
       uvR += delta;
       if (uvR.x < 0.0 || uvR.x > 1.0 || uvR.y < 0.0 || uvR.y > 1.0) break;
-      vec3 s = texture(uScene, uvR).rgb;
-      float br = max(luma(s) - 0.35, 0.0);
-      // Prefer sky / distant (high depth) for shafts
       float d = texture(uDepth, uvR).r;
-      float skyW = smoothstep(0.92, 0.999, d);
-      rays += s * br * decay * mix(0.35, 1.0, skyW);
-      decay *= 0.88;
+      // Occlude shaft when a closer surface sits between pixel and sun
+      float occluded = (d < surfaceD - 0.002 && d < 0.999) ? 0.15 : 1.0;
+      vec3 s = texture(uScene, uvR).rgb;
+      float br = max(luma(s) - 0.28, 0.0);
+      float skyW = smoothstep(0.88, 0.999, d);
+      float heightW = mix(0.5, 1.15, skyW);
+      rays += s * br * decay * heightW * occluded;
+      decay *= 0.90;
     }
-    rays *= vec3(1.15, 0.95, 1.25); // magenta-cyan shaft tint
-    col += rays * rayStr * 0.085;
+    rays *= vec3(1.08, 0.92, 1.18);
+    // Was 0.072 — cut shaft bloom so post doesn't re-fog the frame
+    col += rays * rayStr * 0.038;
   }
 
   // --- Score-reactive color grade (Crystal Nebula intensifies with sprint) ---

@@ -20,7 +20,7 @@ struct GLFWmonitor;
 
 namespace bolt {
 
-/** kind: 0 dust, 1 pawprint, 2 crystal, 3 aura (matches particle.frag) */
+/** kind: 0 dust, 1 pawprint, 2 crystal, 3 aura, 4 near-cam dust, 5 cloud wisp */
 struct CpuParticle {
   glm::vec3 pos{0.f};
   glm::vec3 vel{0.f};
@@ -82,6 +82,8 @@ private:
   float auraEmitAccum_ = 0.f;
   float detailFxAccum_ = 0.f;   // DetailGenerator vent/cluster/spore tick
   float wispAccum_ = 0.f;       // narrative wisps near ruins
+  float atmosDustAccum_ = 0.f;  // near-camera dust motes
+  float atmosCloudAccum_ = 0.f; // soft cloud sheets for depth/scale
   glm::vec3 lastTrailPos_{0.f};
   bool boltFullMesh_ = false;
 

@@ -1,6 +1,7 @@
 #version 450
-// Crystal stalks — PBR + IBL + ORM, rim glow
+// Crystal stalks — PBR + IBL + ORM, rim glow + volumetric fog
 #include "common_pbr.glsl"
+#include "atmos_eval.glsl"
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -16,11 +17,13 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 invViewProj;
   mat4 prevViewProj;
   vec4 taaJitter;
-  mat4 lightViewProj;
+  mat4 lightViewProj[3];
   vec4 shadowParams;
+  vec4 cascadeSplits;
+  vec4 cascadeOrigin;
 } uFrame;
 
-layout(set = 0, binding = 24) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 24) uniform sampler2DArray uShadowMap;
 
 layout(set = 0, binding = 2) uniform sampler2D uGroundAlbedo;
 layout(set = 0, binding = 3) uniform sampler2D uGroundNormal;
@@ -326,8 +329,10 @@ void main() {
 
   float sh = 1.0;
   if (uFrame.shadowParams.z > 0.5) {
-    vec3 sclip = worldToShadowClip(uFrame.lightViewProj, vWorldPos + n * 0.05);
-    sh = sampleShadowPCF(uShadowMap, sclip, uFrame.shadowParams.x, uFrame.shadowParams.w);
+    sh = sampleShadowCSM(uShadowMap, uFrame.lightViewProj[0], uFrame.lightViewProj[1],
+                         uFrame.lightViewProj[2], uFrame.cascadeOrigin.xyz,
+                         uFrame.cascadeSplits.xyz, vWorldPos, n, uFrame.shadowParams.x,
+                         uFrame.shadowParams.w);
     sh = mix(1.0, sh, uFrame.shadowParams.y);
     sh = mix(0.1, 1.0, sh);
   }
@@ -369,11 +374,16 @@ void main() {
     col += emitTint * tip * 0.2;
   }
 
-  float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
-  float fog = 1.0 - exp(-max(0.0, dist - 38.0) * 0.0011);
-  fog = clamp(fog, 0.0, 0.7);
-  vec3 fogCol = atmosphereColor(V, dist) * 0.55;
-  col = mix(col, fogCol, fog * 0.45);
+  // Volumetric fog wraps props (depth layers + sun shafts), not a flat mix
+  {
+    float score = uFrame.sprintScore_flags.x;
+    vec3 cam = uFrame.cameraPos_time.xyz;
+    vec3 sunDir = normalize(vec3(0.35, 0.88, 0.35));
+    vec3 fogSky = atmosphereColor(normalize(vWorldPos - cam),
+                                  length(vWorldPos - cam)) * 0.6;
+    col = applyVolumetricFogFast(col, cam, vWorldPos, sunDir, fogSky,
+                                 uFrame.cameraPos_time.w, score);
+  }
 
   outColor = vec4(col, 1.0);
 }

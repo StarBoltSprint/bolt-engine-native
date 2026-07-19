@@ -77,7 +77,8 @@ bool VulkanContext::initialize(GLFWwindow* window) {
   } else {
     shadowReady_ = true;
     updateMaterialDescriptors();
-    logInfo("Directional sun shadow map ready (1024 PCF)");
+    if (deferredReady_) updateDeferredDescriptors(); // bind CSM array into deferred light set
+    logInfo("Cascaded sun shadows ready (3x1024 PCF CSM)");
   }
   if (!createSync()) return false;
   valid_ = true;
@@ -2272,16 +2273,18 @@ bool VulkanContext::createDeferredPipelines() {
   vkDestroyShaderModule(device_, gfrag, nullptr);
   if (!gbufOk) return false;
 
-  // Deferred light descriptors: 0 UBO, 1-4 images, 5 lights SSBO
+  // Deferred light: 0 UBO, 1-4 GBuffer, 5 lights SSBO, 6 shadow map array (CSM)
   if (!deferredLightDescLayout_) {
-    std::array<VkDescriptorSetLayoutBinding, 6> binds{};
+    std::array<VkDescriptorSetLayoutBinding, 7> binds{};
     binds[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i <= 4; ++i)
       binds[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
                   nullptr};
     binds[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    binds[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                nullptr};
     VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    lci.bindingCount = 6;
+    lci.bindingCount = 7;
     lci.pBindings = binds.data();
     if (vkCreateDescriptorSetLayout(device_, &lci, nullptr, &deferredLightDescLayout_) != VK_SUCCESS)
       return false;
@@ -2289,7 +2292,7 @@ bool VulkanContext::createDeferredPipelines() {
   if (!deferredLightDescPool_) {
     std::array<VkDescriptorPoolSize, 3> ps{};
     ps[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
-    ps[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
+    ps[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5};
     ps[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
     VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pci.maxSets = 1;
@@ -2356,7 +2359,16 @@ void VulkanContext::updateDeferredDescriptors() {
   // sample as GENERAL. We transition in drawFrame before light. Descriptor uses SHADER_READ.
   VkDescriptorBufferInfo lights{crystalLightBuf_.buffer, 0, VK_WHOLE_SIZE};
 
-  std::array<VkWriteDescriptorSet, 6> writes{};
+  // CSM array for deferred sun shadows; fallback 2D default if shadows off
+  VkDescriptorImageInfo iShadow{};
+  if (shadowReady_ && shadowView_ && shadowSampler_) {
+    iShadow = {shadowSampler_, shadowView_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  } else {
+    // Valid placeholder (won't be sampled when shadowParams.z == 0)
+    iShadow = {defaultRough_.sampler, defaultRough_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  }
+
+  std::array<VkWriteDescriptorSet, 7> writes{};
   auto fill = [&](int i, uint32_t b, VkDescriptorType t, const void* buf,
                   const VkDescriptorImageInfo* img) {
     writes[static_cast<size_t>(i)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2374,13 +2386,20 @@ void VulkanContext::updateDeferredDescriptors() {
   fill(3, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iDepth);
   fill(4, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iEmit);
   fill(5, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &lights, nullptr);
-  vkUpdateDescriptorSets(device_, 6, writes.data(), 0, nullptr);
+  fill(6, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, &iShadow);
+  vkUpdateDescriptorSets(device_, 7, writes.data(), 0, nullptr);
 }
 
 void VulkanContext::destroyShadowResources() {
-  if (shadowFramebuffer_) {
-    vkDestroyFramebuffer(device_, shadowFramebuffer_, nullptr);
-    shadowFramebuffer_ = VK_NULL_HANDLE;
+  for (uint32_t i = 0; i < kShadowCascades; ++i) {
+    if (shadowFramebuffer_[i]) {
+      vkDestroyFramebuffer(device_, shadowFramebuffer_[i], nullptr);
+      shadowFramebuffer_[i] = VK_NULL_HANDLE;
+    }
+    if (shadowLayerView_[i]) {
+      vkDestroyImageView(device_, shadowLayerView_[i], nullptr);
+      shadowLayerView_[i] = VK_NULL_HANDLE;
+    }
   }
   if (shadowSampler_) {
     vkDestroySampler(device_, shadowSampler_, nullptr);
@@ -2409,7 +2428,7 @@ bool VulkanContext::createShadowResources() {
   ii.format = VK_FORMAT_D32_SFLOAT;
   ii.extent = {kShadowMapSize, kShadowMapSize, 1};
   ii.mipLevels = 1;
-  ii.arrayLayers = 1;
+  ii.arrayLayers = kShadowCascades;
   ii.samples = VK_SAMPLE_COUNT_1_BIT;
   ii.tiling = VK_IMAGE_TILING_OPTIMAL;
   ii.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -2423,14 +2442,29 @@ bool VulkanContext::createShadowResources() {
   if (vkAllocateMemory(device_, &ai, nullptr, &shadowMemory_) != VK_SUCCESS) return false;
   vkBindImageMemory(device_, shadowImage_, shadowMemory_, 0);
 
+  // Full array view for sampling in lighting shaders
   VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   vi.image = shadowImage_;
-  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
   vi.format = VK_FORMAT_D32_SFLOAT;
   vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
   vi.subresourceRange.levelCount = 1;
-  vi.subresourceRange.layerCount = 1;
+  vi.subresourceRange.baseArrayLayer = 0;
+  vi.subresourceRange.layerCount = kShadowCascades;
   if (vkCreateImageView(device_, &vi, nullptr, &shadowView_) != VK_SUCCESS) return false;
+
+  // Per-layer 2D views for cascade framebuffers
+  for (uint32_t i = 0; i < kShadowCascades; ++i) {
+    VkImageViewCreateInfo lvi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    lvi.image = shadowImage_;
+    lvi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    lvi.format = VK_FORMAT_D32_SFLOAT;
+    lvi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    lvi.subresourceRange.levelCount = 1;
+    lvi.subresourceRange.baseArrayLayer = i;
+    lvi.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(device_, &lvi, nullptr, &shadowLayerView_[i]) != VK_SUCCESS) return false;
+  }
 
   VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   si.magFilter = VK_FILTER_LINEAR;
@@ -2479,14 +2513,18 @@ bool VulkanContext::createShadowResources() {
     if (vkCreateRenderPass(device_, &ci, nullptr, &shadowRenderPass_) != VK_SUCCESS) return false;
   }
 
-  VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-  fci.renderPass = shadowRenderPass_;
-  fci.attachmentCount = 1;
-  fci.pAttachments = &shadowView_;
-  fci.width = kShadowMapSize;
-  fci.height = kShadowMapSize;
-  fci.layers = 1;
-  return vkCreateFramebuffer(device_, &fci, nullptr, &shadowFramebuffer_) == VK_SUCCESS;
+  for (uint32_t i = 0; i < kShadowCascades; ++i) {
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = shadowRenderPass_;
+    fci.attachmentCount = 1;
+    fci.pAttachments = &shadowLayerView_[i];
+    fci.width = kShadowMapSize;
+    fci.height = kShadowMapSize;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(device_, &fci, nullptr, &shadowFramebuffer_[i]) != VK_SUCCESS)
+      return false;
+  }
+  return true;
 }
 
 bool VulkanContext::createShadowPipelines() {
@@ -2576,69 +2614,81 @@ bool VulkanContext::createShadowPipelines() {
   return ok;
 }
 
-void VulkanContext::renderShadowMap(VkCommandBuffer cmd, const FrameUBO& ubo,
+void VulkanContext::renderShadowMap(VkCommandBuffer cmd, const FrameUBO& /*ubo*/,
                                     const SceneInstanceCounts& counts) {
-  if (!shadowReady_ || !shadowFramebuffer_ || !shadowMeshPipeline_) return;
-
-  VkClearValue clear{};
-  clear.depthStencil = {1.f, 0};
-  VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-  rp.renderPass = shadowRenderPass_;
-  rp.framebuffer = shadowFramebuffer_;
-  rp.renderArea.extent = {kShadowMapSize, kShadowMapSize};
-  rp.clearValueCount = 1;
-  rp.pClearValues = &clear;
-  vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-
-  VkViewport vp{};
-  vp.width = static_cast<float>(kShadowMapSize);
-  vp.height = static_cast<float>(kShadowMapSize);
-  vp.maxDepth = 1.f;
-  vkCmdSetViewport(cmd, 0, 1, &vp);
-  VkRect2D sc{{0, 0}, {kShadowMapSize, kShadowMapSize}};
-  vkCmdSetScissor(cmd, 0, 1, &sc);
+  if (!shadowReady_ || !shadowMeshPipeline_ || !shadowFramebuffer_[0]) return;
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
                           &descSets_[frameIndex_], 0, nullptr);
 
-  ObjectPush identity{};
-  identity.model = glm::mat4(1.f);
-  identity.color = glm::vec4(1.f);
-  vkCmdPushConstants(cmd, pipelineLayout_,
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                     sizeof(ObjectPush), &identity);
+  for (uint32_t cascade = 0; cascade < kShadowCascades; ++cascade) {
+    VkClearValue clear{};
+    clear.depthStencil = {1.f, 0};
+    VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rp.renderPass = shadowRenderPass_;
+    rp.framebuffer = shadowFramebuffer_[cascade];
+    rp.renderArea.extent = {kShadowMapSize, kShadowMapSize};
+    rp.clearValueCount = 1;
+    rp.pClearValues = &clear;
+    vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
-  auto drawMesh = [&](GpuMesh& mesh) {
-    if (mesh.indexCount == 0 || !mesh.vertex.buffer) return;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowMeshPipeline_);
-    VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex.buffer, &off);
-    vkCmdBindIndexBuffer(cmd, mesh.index.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, mesh.indexCount, 1, 0, 0, 0);
-  };
-  drawMesh(terrain_);
-  drawMesh(pathRibbon_);
+    VkViewport vp{};
+    vp.width = static_cast<float>(kShadowMapSize);
+    vp.height = static_cast<float>(kShadowMapSize);
+    vp.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{{0, 0}, {kShadowMapSize, kShadowMapSize}};
+    vkCmdSetScissor(cmd, 0, 1, &sc);
 
-  auto drawFol = [&](GpuMesh& mesh, uint32_t count, uint32_t first) {
-    if (!shadowFoliagePipeline_ || mesh.indexCount == 0 || count == 0) return;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowFoliagePipeline_);
-    VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex.buffer, &off);
-    vkCmdBindIndexBuffer(cmd, mesh.index.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, mesh.indexCount, count, 0, 0, first);
-  };
-  // Use source counts (pre-cull) for stable shadows — slightly overdraws ok
-  drawFol(stalk_, counts.stalkCount, counts.stalkFirst);
-  drawFol(bush_, counts.bushCount, counts.bushFirst);
-  for (int t = 0; t < kTreeTypes; ++t)
-    drawFol(treeMeshes_[static_cast<size_t>(t)], counts.treeCount[t], counts.treeFirst[t]);
-  drawFol(detail_, counts.detailCount, counts.detailFirst);
-  drawFol(ruin_, counts.ruinCount, counts.ruinFirst);
-  drawFol(ruinArch_, counts.ruinArchCount, counts.ruinArchFirst);
-  drawFol(ruinObs_, counts.ruinObsCount, counts.ruinObsFirst);
-  drawFol(ruinTemple_, counts.ruinTempleCount, counts.ruinTempleFirst);
+    // color.w = cascade index for lightViewProj[cascade]
+    ObjectPush identity{};
+    identity.model = glm::mat4(1.f);
+    identity.color = glm::vec4(1.f, 1.f, 1.f, static_cast<float>(cascade));
+    identity.anim = glm::vec4(0.f);
+    vkCmdPushConstants(cmd, pipelineLayout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ObjectPush), &identity);
 
-  vkCmdEndRenderPass(cmd);
+    auto drawMesh = [&](GpuMesh& mesh) {
+      if (mesh.indexCount == 0 || !mesh.vertex.buffer) return;
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowMeshPipeline_);
+      VkDeviceSize off = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex.buffer, &off);
+      vkCmdBindIndexBuffer(cmd, mesh.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(cmd, mesh.indexCount, 1, 0, 0, 0);
+    };
+    drawMesh(terrain_);
+    drawMesh(pathRibbon_);
+
+    auto drawFol = [&](GpuMesh& mesh, uint32_t count, uint32_t first) {
+      if (!shadowFoliagePipeline_ || mesh.indexCount == 0 || count == 0) return;
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowFoliagePipeline_);
+      // Re-push cascade (pipeline bind may leave push intact, but keep explicit)
+      vkCmdPushConstants(cmd, pipelineLayout_,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ObjectPush), &identity);
+      VkDeviceSize off = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex.buffer, &off);
+      vkCmdBindIndexBuffer(cmd, mesh.index.buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(cmd, mesh.indexCount, count, 0, 0, first);
+    };
+    // Source counts (pre-cull) for stable shadows
+    drawFol(stalk_, counts.stalkCount, counts.stalkFirst);
+    drawFol(bush_, counts.bushCount, counts.bushFirst);
+    for (int t = 0; t < kTreeTypes; ++t)
+      drawFol(treeMeshes_[static_cast<size_t>(t)], counts.treeCount[t], counts.treeFirst[t]);
+    // Skip dense detail on far cascade (noise / cost)
+    if (cascade < 2)
+      drawFol(detail_, counts.detailCount, counts.detailFirst);
+    drawFol(ruin_, counts.ruinCount, counts.ruinFirst);
+    drawFol(ruinArch_, counts.ruinArchCount, counts.ruinArchFirst);
+    if (cascade < 2) {
+      drawFol(ruinObs_, counts.ruinObsCount, counts.ruinObsFirst);
+      drawFol(ruinTemple_, counts.ruinTempleCount, counts.ruinTempleFirst);
+    }
+
+    vkCmdEndRenderPass(cmd);
+  }
 }
 
 bool VulkanContext::createCullPipeline() {

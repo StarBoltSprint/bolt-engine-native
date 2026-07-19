@@ -59,14 +59,18 @@ vec3 envSkyColor(vec3 dir) {
   return max(sky, vec3(0.0));
 }
 
-// Shadow PCF helper — 5x5 soft edges, still reads as solid dark under props
+vec3 worldToShadowClip(mat4 lightVP, vec3 worldPos) {
+  vec4 c = lightVP * vec4(worldPos, 1.0);
+  vec3 ndc = c.xyz / max(c.w, 1e-6);
+  return vec3(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5, ndc.z);
+}
+
+// Single-map PCF (legacy / tools)
 float sampleShadowPCF(sampler2D shadowMap, vec3 lightClip, float bias, float invMap) {
-  // lightClip: NDC-like xy 0-1, z depth
   if (lightClip.z <= 0.0 || lightClip.z >= 1.0) return 1.0;
   if (lightClip.x < 0.0 || lightClip.x > 1.0 || lightClip.y < 0.0 || lightClip.y > 1.0)
     return 1.0;
   float shadow = 0.0;
-  // Slightly larger kernel for softer penumbra (still dark core)
   for (int y = -2; y <= 2; ++y) {
     for (int x = -2; x <= 2; ++x) {
       vec2 uv = lightClip.xy + vec2(float(x), float(y)) * invMap * 1.15;
@@ -77,11 +81,55 @@ float sampleShadowPCF(sampler2D shadowMap, vec3 lightClip, float bias, float inv
   return shadow / 25.0;
 }
 
-vec3 worldToShadowClip(mat4 lightVP, vec3 worldPos) {
-  vec4 c = lightVP * vec4(worldPos, 1.0);
-  vec3 ndc = c.xyz / max(c.w, 1e-6);
-  // Vulkan NDC y may be flipped depending on proj; ortho lookAt usually needs y flip for sample
-  return vec3(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5, ndc.z);
+// Cascaded shadow PCF — layer = cascade index
+float sampleShadowPCFArray(sampler2DArray shadowMap, vec3 lightClip, float layer, float bias,
+                           float invMap) {
+  if (lightClip.z <= 0.0 || lightClip.z >= 1.0) return 1.0;
+  if (lightClip.x < 0.0 || lightClip.x > 1.0 || lightClip.y < 0.0 || lightClip.y > 1.0)
+    return 1.0;
+  // Tighter filter on near cascade, slightly softer on far
+  float kern = mix(0.9, 1.35, clamp(layer * 0.45, 0.0, 1.0));
+  float shadow = 0.0;
+  for (int y = -2; y <= 2; ++y) {
+    for (int x = -2; x <= 2; ++x) {
+      vec2 uv = lightClip.xy + vec2(float(x), float(y)) * invMap * kern;
+      float d = texture(shadowMap, vec3(uv, layer)).r;
+      shadow += (lightClip.z - bias > d) ? 0.0 : 1.0;
+    }
+  }
+  return shadow / 25.0;
+}
+
+/** 3-cascade CSM: pick by XZ distance from origin, blend at edges */
+float sampleShadowCSM(sampler2DArray shadowMap, mat4 lvp0, mat4 lvp1, mat4 lvp2, vec3 origin,
+                      vec3 splits, vec3 worldPos, vec3 N, float bias, float invMap) {
+  float d = length(worldPos.xz - origin.xz);
+  int c0 = 2;
+  float blend = 0.0;
+  if (d < splits.x) {
+    c0 = 0;
+    blend = smoothstep(splits.x * 0.72, splits.x, d);
+  } else if (d < splits.y) {
+    c0 = 1;
+    blend = smoothstep(splits.y * 0.78, splits.y, d);
+  } else {
+    c0 = 2;
+    blend = 0.0;
+  }
+  int c1 = min(c0 + 1, 2);
+  // Slope-scaled bias — more on far cascades to fight acne
+  float b = bias * (1.0 + float(c0) * 0.65);
+  b *= 1.0 + (1.0 - abs(dot(normalize(N), normalize(vec3(0.35, 0.88, 0.35))))) * 1.2;
+
+  mat4 lvpA = (c0 == 0) ? lvp0 : ((c0 == 1) ? lvp1 : lvp2);
+  vec3 clipA = worldToShadowClip(lvpA, worldPos + N * (0.04 + float(c0) * 0.02));
+  float sA = sampleShadowPCFArray(shadowMap, clipA, float(c0), b, invMap);
+  if (blend < 0.02 || c0 == c1) return sA;
+
+  mat4 lvpB = (c1 == 0) ? lvp0 : ((c1 == 1) ? lvp1 : lvp2);
+  vec3 clipB = worldToShadowClip(lvpB, worldPos + N * (0.04 + float(c1) * 0.02));
+  float sB = sampleShadowPCFArray(shadowMap, clipB, float(c1), b, invMap);
+  return mix(sA, sB, blend);
 }
 
 vec3 iblDiffuse(vec3 N) {

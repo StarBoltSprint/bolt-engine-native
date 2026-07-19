@@ -1,5 +1,6 @@
 #version 450
-// Depth-only sun shadow for instanced foliage
+// Depth-only sun shadow for instanced foliage (CSM)
+// uPush.color.w = cascade index 0..2
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
@@ -17,13 +18,21 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 invViewProj;
   mat4 prevViewProj;
   vec4 taaJitter;
-  mat4 lightViewProj;
+  mat4 lightViewProj[3];
   vec4 shadowParams;
+  vec4 cascadeSplits;
+  vec4 cascadeOrigin;
 } uFrame;
 
 layout(set = 0, binding = 1) readonly buffer Instances {
   Instance data[];
 } uInstances;
+
+layout(push_constant) uniform Push {
+  mat4 model;
+  vec4 color;
+  vec4 anim;
+} uPush;
 
 void main() {
   Instance inst = uInstances.data[gl_InstanceIndex];
@@ -41,5 +50,6 @@ void main() {
   wp.x = c * lp.x + s * lp.z + inst.posScale.x;
   wp.y = lp.y + inst.posScale.y;
   wp.z = -s * lp.x + c * lp.z + inst.posScale.z;
-  gl_Position = uFrame.lightViewProj * vec4(wp, 1.0);
+  int cascade = int(clamp(uPush.color.w, 0.0, 2.0) + 0.5);
+  gl_Position = uFrame.lightViewProj[cascade] * vec4(wp, 1.0);
 }

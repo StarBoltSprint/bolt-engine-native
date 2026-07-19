@@ -26,9 +26,14 @@ struct FrameUBO {
   glm::mat4 invViewProj;        // sky ray reconstruction
   glm::mat4 prevViewProj;       // previous unjittered VP (TAA / velocity)
   glm::vec4 taaJitter;          // xy current NDC jitter, zw previous
-  glm::mat4 lightViewProj;      // sun orthographic VP for shadow map
+  // Cascaded sun shadows (3 orthographic frusta, near → far)
+  glm::mat4 lightViewProj[3];
   // x = depth bias, y = shadow strength 0-1, z = enabled, w = 1/shadowMapSize
   glm::vec4 shadowParams;
+  // xyz = cascade select radii (world XZ distance from origin), w = cascade count
+  glm::vec4 cascadeSplits;
+  // xyz = world focus for cascade pick (usually Bolt), w unused
+  glm::vec4 cascadeOrigin;
 };
 
 /** std140 post UBO — TAA + motion blur + bloom + god rays */
@@ -297,13 +302,15 @@ private:
   VkDescriptorSet deferredLightDescSet_ = VK_NULL_HANDLE;
   bool deferredReady_ = false;
 
-  // Directional sun shadow map
+  // Cascaded directional sun shadow maps (texture2DArray)
   static constexpr uint32_t kShadowMapSize = 1024;
+  static constexpr uint32_t kShadowCascades = 3;
   VkImage shadowImage_ = VK_NULL_HANDLE;
   VkDeviceMemory shadowMemory_ = VK_NULL_HANDLE;
-  VkImageView shadowView_ = VK_NULL_HANDLE;
+  VkImageView shadowView_ = VK_NULL_HANDLE; // 2D array view for sampling
+  VkImageView shadowLayerView_[kShadowCascades]{};
   VkSampler shadowSampler_ = VK_NULL_HANDLE;
-  VkFramebuffer shadowFramebuffer_ = VK_NULL_HANDLE;
+  VkFramebuffer shadowFramebuffer_[kShadowCascades]{};
   VkRenderPass shadowRenderPass_ = VK_NULL_HANDLE;
   VkPipeline shadowMeshPipeline_ = VK_NULL_HANDLE;
   VkPipeline shadowFoliagePipeline_ = VK_NULL_HANDLE;

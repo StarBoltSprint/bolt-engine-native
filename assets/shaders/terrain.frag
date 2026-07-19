@@ -1,6 +1,7 @@
 #version 450
 // Crystal Nebula Plains — soft Star Moss, energy path, IBL + ORM materials
 #include "common_pbr.glsl"
+#include "atmos_eval.glsl"
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -16,11 +17,13 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 invViewProj;
   mat4 prevViewProj;
   vec4 taaJitter;
-  mat4 lightViewProj;
+  mat4 lightViewProj[3];
   vec4 shadowParams;
+  vec4 cascadeSplits;
+  vec4 cascadeOrigin;
 } uFrame;
 
-layout(set = 0, binding = 24) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 24) uniform sampler2DArray uShadowMap;
 
 layout(set = 0, binding = 2) uniform sampler2D uGroundAlbedo;
 layout(set = 0, binding = 3) uniform sampler2D uGroundNormal;
@@ -420,8 +423,10 @@ void main() {
 
   float sh = 1.0;
   if (uFrame.shadowParams.z > 0.5) {
-    vec3 sclip = worldToShadowClip(uFrame.lightViewProj, vWorldPos + N * 0.06);
-    sh = sampleShadowPCF(uShadowMap, sclip, uFrame.shadowParams.x, uFrame.shadowParams.w);
+    sh = sampleShadowCSM(uShadowMap, uFrame.lightViewProj[0], uFrame.lightViewProj[1],
+                         uFrame.lightViewProj[2], uFrame.cascadeOrigin.xyz,
+                         uFrame.cascadeSplits.xyz, vWorldPos, N, uFrame.shadowParams.x,
+                         uFrame.shadowParams.w);
     sh = mix(1.0, sh, uFrame.shadowParams.y);
     // Punch: shadowed regions go darker (depth under trees / rocks)
     sh = mix(0.12, 1.0, sh);
@@ -449,14 +454,14 @@ void main() {
   // Height micro-shadow
   col *= mix(0.82, 1.0, heightS);
 
-  // Fog pull-back: keep near/mid ground sharp; haze only at distance
-  float dist = length(uFrame.cameraPos_time.xyz - vWorldPos);
-  float fog = 1.0 - exp(-max(0.0, dist - 35.0) * 0.00115); // free 35m, then slow
-  fog = smoothstep(0.0, 1.0, fog);
-  vec3 fogCol = atmosphereColor(V, dist, score) * 0.55;
-  float hFog = exp(-max(vWorldPos.y, 0.0) * 0.1) * 0.06;
-  fog = clamp(fog + hFog * fog, 0.0, 0.72);
-  col = mix(col, fogCol, fog * 0.48);
+  // Volumetric fog (forward path) — same model as deferred
+  {
+    vec3 cam = uFrame.cameraPos_time.xyz;
+    vec3 sunDir = normalize(vec3(0.35, 0.88, 0.35));
+    float dist = length(cam - vWorldPos);
+    vec3 fogSky = atmosphereColor(normalize(vWorldPos - cam), dist, score) * 0.55;
+    col = applyVolumetricFogFast(col, cam, vWorldPos, sunDir, fogSky, t, score);
+  }
 
   // Tiny path sparkle lift only (no full-frame bloom)
   float bloom = max(dot(col, vec3(0.3, 0.5, 0.2)) - 0.75, 0.0);

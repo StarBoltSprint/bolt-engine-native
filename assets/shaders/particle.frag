@@ -1,9 +1,10 @@
 #version 450
-// Soft dust / pawprint ring / crystal spark / aura spark shapes
+// Soft dust / pawprint / crystal / aura / near-cam dust / cloud wisps
 
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColorLife;
 layout(location = 2) flat in float vKind;
+layout(location = 3) in float vCamDist;
 
 layout(location = 0) out vec4 outColor;
 
@@ -39,7 +40,7 @@ void main() {
     float m = max(core, arm * 0.65);
     a = m * life * 0.85;
     col += vec3(0.7, 0.5, 1.0) * core * 0.5;
-  } else {
+  } else if (vKind < 3.5) {
     // 3 aura spark — soft diamond glow
     if (r > 1.0) discard;
     float d = abs(p.x) + abs(p.y);
@@ -48,7 +49,33 @@ void main() {
     a = soft * life * 0.7;
     col = mix(col, vec3(0.75, 0.45, 1.0), 0.4);
     col += vec3(0.3, 0.9, 1.0) * soft * 0.35 * life;
+  } else if (vKind < 4.5) {
+    // 4 near-camera dust mote — tiny flecks for air density / scale
+    if (r > 1.0) discard;
+    float core = 1.0 - smoothstep(0.0, 0.45, r);
+    float halo = (1.0 - smoothstep(0.2, 1.0, r)) * 0.35;
+    float m = max(core, halo);
+    // Fade when too close (screen haze) or too far (noise)
+    float distFade = smoothstep(1.2, 3.5, vCamDist) * (1.0 - smoothstep(28.0, 48.0, vCamDist));
+    a = m * life * 0.42 * distFade;
+    col += vec3(0.55, 0.75, 1.05) * core * 0.45;
+    col = mix(col, vec3(0.85, 0.7, 1.1), 0.25);
+  } else {
+    // 5 soft cloud / nebula dust sheet — depth without geo
+    if (r > 1.0) discard;
+    // Soft irregular blob (cheap fake noise via radial + axes)
+    float soft = 1.0 - smoothstep(0.15, 1.0, r);
+    soft = soft * soft * (0.75 + 0.25 * (1.0 - abs(p.x * p.y)));
+    // Secondary lobes for wispy edges
+    float lobe = 1.0 - smoothstep(0.0, 0.9, length(p * vec2(1.35, 0.75)));
+    soft = max(soft, lobe * 0.55);
+    float distFade = smoothstep(5.0, 12.0, vCamDist) * (1.0 - smoothstep(55.0, 95.0, vCamDist));
+    // Keep subtle — never opaque fog wall
+    a = soft * life * 0.14 * distFade;
+    col = mix(col, vec3(0.45, 0.28, 0.65), 0.35);
+    col += vec3(0.25, 0.55, 0.85) * soft * 0.2 * life;
   }
 
+  if (a < 0.004) discard;
   outColor = vec4(col, a);
 }

@@ -16,8 +16,10 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 invViewProj;
   mat4 prevViewProj;
   vec4 taaJitter;
-  mat4 lightViewProj;
+  mat4 lightViewProj[3];
   vec4 shadowParams;
+  vec4 cascadeSplits;
+  vec4 cascadeOrigin;
 } uFrame;
 
 layout(set = 0, binding = 2) uniform sampler2D uGroundAlbedo;

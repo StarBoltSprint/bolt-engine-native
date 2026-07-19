@@ -838,7 +838,9 @@ void Application::fixedUpdate(float dt) {
 }
 
 void Application::updateParticles(float dt) {
-  // Age / move — pawprints hug ground; sparks drift
+  constexpr size_t kMaxParticles = 768;
+
+  // Age / move — pawprints hug ground; sparks drift; atmos floats
   for (auto& p : particles_) {
     p.life -= dt;
     p.pos += p.vel * dt;
@@ -852,6 +854,16 @@ void Application::updateParticles(float dt) {
     } else if (p.kind == 3) {
       p.vel *= (1.f - 1.0f * dt);
       p.size *= (1.f - 0.4f * dt);
+    } else if (p.kind == 4) {
+      // Near-cam dust — slow drift, tiny sink, hold size
+      p.vel.y -= 0.12f * dt;
+      p.vel *= (1.f - 0.35f * dt);
+      p.size *= (1.f - 0.08f * dt);
+    } else if (p.kind == 5) {
+      // Cloud wisps — almost buoyant, very soft size breath via shader
+      p.vel.y += 0.05f * dt;
+      p.vel *= (1.f - 0.25f * dt);
+      p.size *= (1.f - 0.04f * dt);
     } else {
       p.vel.y += 0.8f * dt;
       p.vel *= (1.f - 1.8f * dt);
@@ -870,8 +882,21 @@ void Application::updateParticles(float dt) {
   const glm::vec3 right{std::cos(yaw), 0.f, -std::sin(yaw)};
   const float groundY = ctx_.height.sample(pos.x, pos.z, ctx_.sprint.score);
 
+  // Camera frame (same orbit as render) — atmosphere fills near view volume
+  const float camJump = jumpT_ >= 0.f ? boltJumpHeightOffset(jumpT_) : 0.f;
+  const glm::vec3 focus(pos.x, groundY + 0.95f + camJump, pos.z);
+  const float cp = std::cos(camOrbitPitch_);
+  const float sp = std::sin(camOrbitPitch_);
+  const float sy = std::sin(camOrbitYaw_);
+  const float cy = std::cos(camOrbitYaw_);
+  const glm::vec3 eye =
+      focus + glm::vec3(sy * cp * camDist_, sp * camDist_, cy * cp * camDist_);
+  const glm::vec3 camFwd = glm::normalize(focus - eye);
+  const glm::vec3 camRight = glm::normalize(glm::cross(camFwd, glm::vec3(0.f, 1.f, 0.f)));
+  const glm::vec3 camUp = glm::normalize(glm::cross(camRight, camFwd));
+
   auto spawnOne = [&](glm::vec3 at, float size, float life, glm::vec3 col, glm::vec3 kick, int kind) {
-    if (particles_.size() >= 512) return;
+    if (particles_.size() >= kMaxParticles) return;
     CpuParticle p;
     p.pos = at;
     p.vel = kick;
@@ -886,7 +911,7 @@ void Application::updateParticles(float dt) {
   // Path 5: crystal dust under feet (pack crystal_dust aesthetic)
   if (emit && speed > 6.f) {
     emitAccum_ += dt * (10.f + speed * 0.65f);
-    while (emitAccum_ >= 1.f && particles_.size() < 512) {
+    while (emitAccum_ >= 1.f && particles_.size() < kMaxParticles) {
       emitAccum_ -= 1.f;
       const float rx = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 0.4f;
       const float rz = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 0.4f;
@@ -917,7 +942,7 @@ void Application::updateParticles(float dt) {
   const float energyGate = ctx_.sprint.score + (jumpT_ >= 0.f ? 0.5f : 0.f);
   if (energyGate > 0.35f && (ctx_.sprint.sprinting || jumpT_ >= 0.f)) {
     auraEmitAccum_ += dt * (6.f + energyGate * 10.f + speed * 0.05f);
-    while (auraEmitAccum_ >= 1.f && particles_.size() < 512) {
+    while (auraEmitAccum_ >= 1.f && particles_.size() < kMaxParticles) {
       auraEmitAccum_ -= 1.f;
       const float ang = static_cast<float>(std::rand() % 628) / 100.f;
       const float rad = 0.35f + static_cast<float>(std::rand() % 100) / 100.f * 0.55f;
@@ -934,11 +959,65 @@ void Application::updateParticles(float dt) {
   // Landing crystal burst (once when jump enters land phase)
   if (landBurstPending_) {
     landBurstPending_ = false;
-    for (int i = 0; i < 12 && static_cast<int>(particles_.size()) < 512; ++i) {
+    for (int i = 0; i < 12 && particles_.size() < kMaxParticles; ++i) {
       const float ang = static_cast<float>(i) / 12.f * 6.28318f;
       spawnOne(glm::vec3(pos.x, groundY + 0.15f, pos.z), 0.22f, 0.55f,
                glm::vec3(0.6f, 0.9f, 1.f),
                glm::vec3(std::cos(ang) * 3.5f, 2.2f, std::sin(ang) * 3.5f), 2);
+    }
+  }
+
+  // —— Near-camera atmosphere: dust motes + soft cloud sheets (depth/scale, no heavy geo) ——
+  {
+    const float score = ctx_.sprint.score;
+    // Count existing atmos so we keep a stable layer without starving gameplay FX
+    size_t nDust = 0, nCloud = 0;
+    for (const auto& p : particles_) {
+      if (p.kind == 4) ++nDust;
+      else if (p.kind == 5) ++nCloud;
+    }
+    const size_t maxDust = 90;
+    const size_t maxCloud = 28;
+
+    // Dust flecks in camera volume (mid-field + sides)
+    const float dustRate =
+        18.f + score * 14.f + (ctx_.sprint.sprinting ? speed * 0.12f : 0.f);
+    atmosDustAccum_ += dt * dustRate;
+    while (atmosDustAccum_ >= 1.f && nDust < maxDust && particles_.size() < kMaxParticles) {
+      atmosDustAccum_ -= 1.f;
+      ++nDust;
+      const float along = 2.5f + static_cast<float>(std::rand() % 100) / 100.f * 22.f;
+      const float side = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 10.f;
+      const float upOff = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 4.5f + 1.2f;
+      const glm::vec3 at = eye + camFwd * along + camRight * side + camUp * upOff;
+      const float rnd = static_cast<float>(std::rand() % 100) / 100.f;
+      const glm::vec3 drift =
+          camRight * ((rnd - 0.5f) * 0.35f) + camUp * ((static_cast<float>(std::rand() % 100) / 100.f - 0.4f) * 0.2f) +
+          camFwd * ((static_cast<float>(std::rand() % 100) / 100.f - 0.5f) * 0.15f);
+      // Mix cyan dust + purple crystal flecks
+      const bool crystal = (std::rand() % 4 == 0);
+      spawnOne(at, crystal ? 0.06f + rnd * 0.08f : 0.09f + rnd * 0.12f,
+               1.8f + rnd * 2.4f,
+               crystal ? glm::vec3(0.75f, 0.55f, 1.05f) : glm::vec3(0.55f, 0.8f, 1.0f),
+               drift, 4);
+    }
+
+    // Soft cloud / nebula dust sheets further out (cheap volumetric depth)
+    const float cloudRate = 3.2f + score * 2.8f + (ctx_.sprint.sprinting ? 1.5f : 0.f);
+    atmosCloudAccum_ += dt * cloudRate;
+    while (atmosCloudAccum_ >= 1.f && nCloud < maxCloud && particles_.size() < kMaxParticles) {
+      atmosCloudAccum_ -= 1.f;
+      ++nCloud;
+      const float along = 10.f + static_cast<float>(std::rand() % 100) / 100.f * 45.f;
+      const float side = (static_cast<float>(std::rand() % 200) / 100.f - 1.f) * 18.f;
+      const float upOff = 2.f + static_cast<float>(std::rand() % 100) / 100.f * 10.f;
+      const glm::vec3 at = eye + camFwd * along + camRight * side + camUp * upOff;
+      const float rnd = static_cast<float>(std::rand() % 100) / 100.f;
+      const glm::vec3 drift =
+          camRight * ((rnd - 0.5f) * 0.18f) + camUp * 0.04f +
+          camFwd * ((static_cast<float>(std::rand() % 100) / 100.f - 0.5f) * 0.08f);
+      spawnOne(at, 3.5f + rnd * 6.5f + score * 1.5f, 4.5f + rnd * 5.f,
+               glm::vec3(0.42f + score * 0.05f, 0.22f, 0.55f + score * 0.08f), drift, 5);
     }
   }
 
@@ -949,10 +1028,10 @@ void Application::updateParticles(float dt) {
     std::vector<FoliageInstance> dets;
     streamer_.gatherDetails(dets);
 
-    while (detailFxAccum_ >= 1.f && particles_.size() < 500) {
+    while (detailFxAccum_ >= 1.f && particles_.size() < kMaxParticles - 80) {
       detailFxAccum_ -= 1.f;
       if (dets.empty()) break;
-      for (int attempt = 0; attempt < 6 && particles_.size() < 500; ++attempt) {
+      for (int attempt = 0; attempt < 6 && particles_.size() < kMaxParticles - 80; ++attempt) {
         const size_t idx = static_cast<size_t>(std::rand()) % dets.size();
         const auto& d = dets[idx];
         const float dx = d.position.x - pos.x;
@@ -968,14 +1047,14 @@ void Application::updateParticles(float dt) {
                    glm::vec3((static_cast<float>(std::rand() % 100) / 100.f - 0.5f) * 0.4f, up,
                              (static_cast<float>(std::rand() % 100) / 100.f - 0.5f) * 0.4f),
                    2);
-          if (score > 0.55f && particles_.size() < 500)
+          if (score > 0.55f && particles_.size() < kMaxParticles - 80)
             spawnOne(d.position + glm::vec3(0.f, h, 0.f), 0.08f, 0.4f,
                      glm::vec3(0.45f, 0.85f, 1.f), glm::vec3(0.f, up * 0.7f, 0.f), 0);
         } else if (d.kind == DetailKind::Cluster) {
           spawnOne(d.position + glm::vec3(0.f, d.scale * 0.4f, 0.f), 0.09f, 0.35f,
                    glm::vec3(0.45f, 0.9f, 1.1f), glm::vec3(0.f, 0.8f, 0.f), 2);
           if (ctx_.sprint.sprinting && d2 < 14.f * 14.f && speed > 10.f) {
-            for (int s = 0; s < 3 && particles_.size() < 512; ++s) {
+            for (int s = 0; s < 3 && particles_.size() < kMaxParticles; ++s) {
               const float ang = static_cast<float>(std::rand() % 628) / 100.f;
               spawnOne(d.position + glm::vec3(0.f, 0.3f, 0.f), 0.12f, 0.45f,
                        glm::vec3(0.55f, 0.85f, 1.15f),
@@ -999,7 +1078,7 @@ void Application::updateParticles(float dt) {
     std::vector<FlyingParticleSpawn> fx;
     flyingGenerator_.harvestParticles(fx, dt, ctx_.sprint, pos, groundY, flyingRaw, ruins);
     for (const auto& s : fx) {
-      if (particles_.size() >= 512) break;
+      if (particles_.size() >= kMaxParticles) break;
       spawnOne(s.pos, s.size, s.life, s.color, s.vel, s.particleKind);
     }
   }
@@ -1102,18 +1181,28 @@ void Application::render() {
   // Higher tiling = finer ground grit (was 0.008 → flat purple slab)
   ubo.tiling_pad = glm::vec4(0.014f, pathHw, 4.0f, 4.5f);
 
-  // Sun orthographic shadow volume centered on Bolt (tighter = sharper local shadows)
+  // Cascaded sun shadows (3 ortho volumes centered on Bolt: near / mid / far)
   {
     const glm::vec3 sunDir = glm::normalize(glm::vec3(0.35f, 0.88f, 0.35f));
-    const glm::vec3 center = glm::vec3(ctx_.sprint.position.x, ctx_.sprint.position.y, ctx_.sprint.position.z);
-    const float ext = 58.f; // slightly tighter frustum → more texels on near ground
-    const glm::mat4 lightView =
-        glm::lookAt(center + sunDir * 85.f, center, glm::vec3(0.f, 1.f, 0.f));
-    glm::mat4 lightProj = glm::ortho(-ext, ext, -ext, ext, 4.f, 180.f);
-    lightProj[1][1] *= -1.f; // Vulkan Y
-    ubo.lightViewProj = lightProj * lightView;
-    // x=bias, y=strength (punch), z=enabled, w=1/mapSize
-    ubo.shadowParams = glm::vec4(0.0018f, 0.96f, 1.f, 1.f / 1024.f);
+    const glm::vec3 center(ctx_.sprint.position.x, groundY + 1.f, ctx_.sprint.position.z);
+    // Half-extents (world meters) + light-space depth range per cascade
+    const float extents[3] = {14.f, 42.f, 105.f};
+    const float zNear[3] = {2.f, 4.f, 8.f};
+    const float zFar[3] = {70.f, 140.f, 260.f};
+    const float lightDist[3] = {40.f, 80.f, 150.f};
+    for (int i = 0; i < 3; ++i) {
+      const float ext = extents[i];
+      const glm::mat4 lightView =
+          glm::lookAt(center + sunDir * lightDist[i], center, glm::vec3(0.f, 1.f, 0.f));
+      glm::mat4 lightProj = glm::ortho(-ext, ext, -ext, ext, zNear[i], zFar[i]);
+      lightProj[1][1] *= -1.f; // Vulkan Y
+      ubo.lightViewProj[i] = lightProj * lightView;
+    }
+    // Select radii slightly inside extents so blend band stays on-map
+    ubo.cascadeSplits = glm::vec4(extents[0] * 0.92f, extents[1] * 0.92f, extents[2] * 0.92f, 3.f);
+    ubo.cascadeOrigin = glm::vec4(center, 0.f);
+    // x=bias, y=strength, z=enabled, w=1/mapSize
+    ubo.shadowParams = glm::vec4(0.0015f, 0.97f, 1.f, 1.f / 1024.f);
   }
 
   // Path 2: idle / run / jump state from speed + jump timer
