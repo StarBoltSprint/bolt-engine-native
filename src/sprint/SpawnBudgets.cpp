@@ -18,29 +18,28 @@ SpawnBudgets SpawnBudgets::forQuality(int tier) {
       b.forestBatches = 2;
       b.vegSpawnsPerTick = 2;
       break;
-    case 2: // High
-      b.vegInstances = 3500;
-      b.forestBatches = 3;
-      b.vegSpawnsPerTick = 3;
-      b.detailCap = 16;
+    case 2: // High — dense Crystal Nebula forests (GPU cull carries load)
+      b.vegInstances = 5500;
+      b.forestBatches = 4;
+      b.vegSpawnsPerTick = 5;
+      b.detailCap = 22;
       break;
     default: // Max
-      b.vegInstances = 6000;
-      b.forestBatches = 4;
-      b.vegSpawnsPerTick = 4;
-      b.detailCap = 20;
+      b.vegInstances = 9000;
+      b.forestBatches = 5;
+      b.vegSpawnsPerTick = 6;
+      b.detailCap = 28;
       break;
   }
   return b;
 }
 
 void SpawnBudgets::applySprint(const SprintCore& sprint) {
-  // High score: more large drama, controlled small clutter (web lesson)
-  densityMul = 0.75f + sprint.score * 0.55f;
-  particleMul = 0.4f + sprint.score * 0.8f;
-  if (sprint.score > 0.85f) {
-    // Prefer fewer spam particles at very high dens
-    particleMul *= 0.85f;
+  // Meaningful Sprint densifies forests hard; GPU cull keeps draw cheap
+  densityMul = 0.9f + sprint.score * 0.85f;
+  particleMul = 0.45f + sprint.score * 0.9f;
+  if (sprint.score > 0.9f) {
+    particleMul *= 0.9f;
   }
 }
 

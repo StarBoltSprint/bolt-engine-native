@@ -51,6 +51,18 @@ endif()
 
 if(BOLT_USE_VULKAN)
   find_package(Vulkan REQUIRED)
+  # Vulkan Memory Allocator — stable GPU memory for streaming / scale
+  FetchContent_Declare(
+    vma
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.1.0
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_GetProperties(vma)
+  if(NOT vma_POPULATED)
+    FetchContent_Populate(vma)
+  endif()
+  set(VMA_INCLUDE_DIR "${vma_SOURCE_DIR}/include")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -62,12 +74,15 @@ add_library(bolt_engine
   src/sprint/SprintCore.cpp
   src/sprint/SpawnBudgets.cpp
   src/world/HeightField.cpp
+  src/world/TerrainFeatureGenerator.cpp
   src/world/SpawnRules.cpp
   src/world/TerrainMesh.cpp
   src/pcg/PathGenerator.cpp
   src/pcg/PathRibbon.cpp
   src/pcg/VegetationSpawner.cpp
   src/pcg/DetailSpawner.cpp
+  src/pcg/FlyingGenerator.cpp
+  src/pcg/SkyGenerator.cpp
   src/pcg/RuinGenerator.cpp
   src/pcg/PropMeshes.cpp
   src/pcg/StalkMesh.cpp
@@ -82,6 +97,7 @@ add_library(bolt_engine
   src/render/QualityTier.cpp
   src/render/RenderGraph.cpp
   src/render/VulkanContext.cpp
+  src/render/VmaImpl.cpp
   src/app/Application.cpp
 )
 
@@ -102,6 +118,10 @@ target_link_libraries(bolt_engine
 if(BOLT_USE_VULKAN)
   target_compile_definitions(bolt_engine PUBLIC BOLT_VULKAN=1)
   target_link_libraries(bolt_engine PUBLIC Vulkan::Vulkan)
+  if(VMA_INCLUDE_DIR)
+    target_include_directories(bolt_engine PUBLIC ${VMA_INCLUDE_DIR})
+    target_compile_definitions(bolt_engine PUBLIC BOLT_USE_VMA=1)
+  endif()
 endif()
 
 if(WIN32)

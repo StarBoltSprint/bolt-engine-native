@@ -19,8 +19,14 @@ struct GpuTexture {
 struct MaterialGpu {
   GpuTexture albedo;
   GpuTexture normal;
+  /** Packed ORM-ish: R=roughness G=metallic B=height (0.5 = flat) */
   GpuTexture roughness;
+  /** Optional RGB emissive (Imagine maps); black if missing */
+  GpuTexture emissive;
   bool valid = false;
+  bool hasEmissive = false;
+  bool hasMetallic = false;
+  bool hasHeight = false;
 };
 
 } // namespace bolt

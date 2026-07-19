@@ -27,13 +27,18 @@ layout(location = 1) out float vScale;
 
 void main() {
   Instance inst = uInstances.data[gl_InstanceIndex];
-  float sc = max(inst.posScale.w, 0.35) * 1.55;
-  // Flatten slightly with distance (cheaper look when far)
+  float kind = inst.yawKind.y;
+  // Ruins get wide soft contact discs; veg stays tight
+  float mul = (kind > 9.5) ? 0.55 : 1.55;
+  float sc = max(inst.posScale.w, 0.35) * mul;
+  if (kind > 9.5) sc = clamp(sc, 2.5, 14.0);
   float dist = length(uFrame.cameraPos_time.xz - inst.posScale.xz);
   sc *= mix(1.0, 0.75, smoothstep(40.0, 120.0, dist));
 
   vec3 wp = inst.posScale.xyz;
-  wp.y = inst.posScale.y + 0.04; // sit just above terrain sample height of stalk base
+  // Ruins may float — shadow still on ground-ish (use low Y for floating arches)
+  float baseY = (kind > 10.5 && kind < 11.5) ? (inst.posScale.y - 1.5) : inst.posScale.y;
+  wp.y = baseY + 0.05;
   wp.x += inPosition.x * sc;
   wp.z += inPosition.z * sc;
 

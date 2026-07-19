@@ -17,4 +17,8 @@ TerrainMeshCPU buildTerrainMesh(const HeightField& height, int segs, float sizeM
                                 float originX = 0.f, float originZ = 0.f,
                                 float sprintScore = 0.f);
 
+/** Normal matching sample(..., sprintScore) including terrain features. */
+glm::vec3 heightNormalAt(const HeightField& height, float x, float z, float sprintScore,
+                         float eps = 0.75f);
+
 } // namespace bolt

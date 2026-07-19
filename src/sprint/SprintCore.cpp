@@ -26,8 +26,8 @@ void SprintCore::update(float dt) {
     momentum = std::max(0.f, momentum - dt * 0.45f);
   }
 
-  // Meaningful blend (simplified port of web factors)
-  const float speedF = std::clamp(speed / 28.f, 0.f, 1.2f);
+  // Meaningful blend; top sprint ~300–430 u/s with momentum
+  const float speedF = std::clamp(speed / 280.f, 0.f, 1.25f);
   const float momF = momentum;
   const float intF = intention;
   const float resF = resonance * 0.35f;

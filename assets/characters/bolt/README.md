@@ -17,11 +17,13 @@ Outputs:
 
 ## Engine pipeline
 
-1. Blender models low-poly white GSD-style dog + UVs + materials  
-2. Export glTF 2.0 (`.glb`)  
+1. **AI 2D→3D (current live):** multi-view Imagine refs → HuggingFace TripoSR → Blender normalize  
+   - See `ai3d/README.txt` and `tools/run_triposr_bolt.py`  
+   - Live mesh: `bolt_gsd.glb` (from `ai3d/bolt_gsd_triposr.glb`)  
+2. Or Blender sculpt: `tools/blender_make_bolt.py`  
 3. Engine `loadGltfMesh` → normalize size/feet/+Z  
 4. Runtime white fur PBR: `assets/materials/bolt/bolt_fur_*`  
-5. Aura + orbit camera in Vulkan  
+5. Aura + Path 2 idle/run/jump + orbit camera in Vulkan  
 
 ## Controls
 

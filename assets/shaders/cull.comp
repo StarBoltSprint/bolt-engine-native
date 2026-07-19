@@ -1,0 +1,84 @@
+#version 450
+// GPU frustum + distance cull for foliage/ruin instances → compact + indirect counts
+// local_size 64; one dispatch per batch (push constants)
+
+layout(local_size_x = 64) in;
+
+struct Instance {
+  vec4 posScale; // xyz, w=scale
+  vec4 yawKind;
+};
+
+// std140 cull params
+layout(set = 0, binding = 0) uniform CullParams {
+  mat4 viewProj;
+  vec4 camPos_params; // xyz cam, w = sprintSpeedNorm 0-1
+  vec4 frustum[6];    // xyz normal, w offset (plane: n·p + w >= 0 inside)
+  vec4 lodParams;     // x=baseFar, y=nearBoost, z=minScaleKeep, w=unused
+} uCull;
+
+layout(set = 0, binding = 1) readonly buffer SrcInstances {
+  Instance data[];
+} uSrc;
+
+layout(set = 0, binding = 2) writeonly buffer DstInstances {
+  Instance data[];
+} uDst;
+
+// Indirect: 5 uints per command × 16 slots
+// 0..7  foliage meshes, 8..15 contact-shadow blobs (same instanceCount)
+// [0]=indexCount [1]=instanceCount [2]=firstIndex [3]=vertexOffset [4]=firstInstance
+layout(set = 0, binding = 3) buffer IndirectCmds {
+  uint data[];
+} uIndirect;
+
+layout(push_constant) uniform Push {
+  uint batchIndex; // 0..7
+  uint srcFirst;
+  uint srcCount;
+  uint indexCount;
+} pc;
+
+bool sphereInFrustum(vec3 c, float r) {
+  for (int i = 0; i < 6; ++i) {
+    float d = dot(uCull.frustum[i].xyz, c) + uCull.frustum[i].w;
+    if (d < -r) return false;
+  }
+  return true;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= pc.srcCount) return;
+
+  uint srcIdx = pc.srcFirst + i;
+  Instance inst = uSrc.data[srcIdx];
+  vec3 pos = inst.posScale.xyz;
+  float sc = max(inst.posScale.w, 0.2);
+  // Bounding sphere — ruins/trees need larger radius
+  float kind = inst.yawKind.y;
+  float radMul = 1.6;
+  if (kind > 9.5) radMul = 2.8;
+  else if (kind > 3.5) radMul = 2.2;
+  float radius = sc * radMul + 0.5;
+
+  // Distance LOD — tighter when sprinting very fast (perf), keep large props longer
+  vec3 cam = uCull.camPos_params.xyz;
+  float speedN = clamp(uCull.camPos_params.w, 0.0, 1.0);
+  float dist = length(pos - cam);
+  float baseFar = uCull.lodParams.x; // ~200
+  float farDist = mix(baseFar, baseFar * 0.72, speedN); // cull sooner when sprinting hard
+  // Large instances stay visible farther
+  farDist *= mix(0.55, 1.35, clamp(sc / 8.0, 0.0, 1.0));
+  if (kind > 9.5) farDist *= 1.5; // ruins always farther
+  if (dist - radius > farDist) return;
+
+  if (!sphereInFrustum(pos, radius)) return;
+
+  // Compact into same region as source batch (CPU pre-inits indexCount/firstInstance)
+  uint slot = atomicAdd(uIndirect.data[pc.batchIndex * 5u + 1u], 1u);
+  // Mirror count for contact-shadow blob draw (slots after 17 mesh batches)
+  atomicAdd(uIndirect.data[(pc.batchIndex + 17u) * 5u + 1u], 1u);
+  uint dstIdx = pc.srcFirst + slot;
+  uDst.data[dstIdx] = inst;
+}

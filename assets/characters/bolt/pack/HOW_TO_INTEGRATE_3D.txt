@@ -1,0 +1,155 @@
+HOW TO INTEGRATE THE BOLT ASSET PACK INTO THE 3D GAME
+====================================================
+Open with Notepad. No extra app needed.
+
+You have TWO different things:
+  A) 3D dog mesh in the game   (bolt_gsd.glb + code animation)
+  B) 2D pack frames/videos     (sprint/idle/jump PNGs + MP4s)
+
+They do NOT auto-connect. PNGs are not bones. You choose one of the paths below.
+
+
+WHAT THE GAME DOES TODAY
+------------------------
+File: src/app/Application.cpp  (render) + src/pcg/BoltGsd.cpp
+
+  1. Loads mesh: assets/characters/bolt/bolt_gsd.glb
+  2. Loads fur:  assets/materials/bolt/bolt_fur_*   <-- PACK PBR already used
+  3. Animates with CODE, not with pack frames:
+       phase = time * speed
+       boltAnimTransforms(phase, speed, energy)  -> bob, lean, stretch, aura pulse
+  4. If full GLB mesh: legs are BAKED into one mesh, so code cannot swing
+     individual legs (no skeleton). Only whole-body bounce.
+
+So right now the pack is integrated for:
+  [YES] Fur textures (albedo/normal/roughness/height/emissive)
+  [NO ] Idle/sprint/jump frame sequences as 3D animation
+  [NO ] Aura/pawprint sprites as GPU billboards (particles are code-only)
+
+
+PATH 1 — Easiest / already half done: TEXTURES ONLY
+---------------------------------------------------
+Use pack materials as skin on the 3D mesh (current).
+
+  Already wired:
+    Application loads: assets/materials/bolt/bolt_fur
+    Pack copies those PNGs there.
+
+  To refresh after new art:
+    1. Copy pack/materials/bolt_fur_*.png -> assets/materials/bolt/
+    2. Restart bolt_crystal.exe (or hot-reload if enabled)
+
+  This does NOT play idle_01.png as animation. It only changes how fur looks.
+
+
+PATH 2 — Recommended next: BETTER 3D CODE ANIMATION (use pack as reference)
+---------------------------------------------------------------------------
+Keep the GLB mesh. Improve boltAnimTransforms so motion FEELS like the videos.
+
+  States driven by gameplay:
+    idle   -> low bob, soft breathing, slow tail, low aura
+    run    -> stronger bob/lean/stretch from speed (you already have this)
+    jump   -> short phase: crouch dip -> stretch up -> land squash
+
+  Map pack to code (not load PNGs):
+    idle cycle  -> sin wave on chest scale / Y bob (breathing)
+    sprint      -> faster phase, bigger lean, more stretch
+    jump        -> when player presses Space, run a 0.6s jump curve
+
+  Pros: real 3D, works with camera orbit, no sprite pop
+  Cons: full-mesh GLB still has frozen legs unless you add a skeleton
+
+  Code touch points:
+    src/pcg/BoltGsd.cpp     -> boltAnimTransforms + new jump curve
+    src/app/Application.cpp -> anim state (idle/run/jump), Space jump
+
+
+PATH 3 — Medium: 2D BILLBOARD / SPRITE OVERLAY (use pack frames as textures)
+----------------------------------------------------------------------------
+Load idle_01..08 or sprint_01..10 as Vulkan textures, draw a quad near camera
+or as a distant LOD.
+
+  Steps:
+    1. Texture array or atlas from animation/*/cycle/*.png
+    2. Each frame pick index from time
+    3. Draw transparent quad with dog facing camera (or side)
+
+  Pros: looks exactly like the pack art
+  Cons: flat paper dog; fights with true 3D mesh (usually pick ONE)
+
+  Best use: menus, loading screen, distant LOD, cutscenes — not main gameplay.
+
+
+PATH 4 — Hard / best quality: REAL SKELETAL ANIMATION
+-----------------------------------------------------
+  1. Open bolt_gsd.glb in Blender (you have portable Blender tools)
+  2. Rig with dog armature (or retarget Mixamo/free dog rig)
+  3. Animate idle / run / jump (use pack MP4s as reference on side monitor)
+  4. Export glTF with skins + animations
+  5. Engine: load skins, play Animation[idle|run|jump] by name
+
+  Pros: professional 3D animation, legs really move
+  Cons: biggest project (days, not minutes); needs glTF skinning in Vulkan loader
+
+  Your GltfLoader today is mesh-only (no skinning yet).
+
+
+PATH 5 — FX from pack (easy win with 3D mesh)
+---------------------------------------------
+  pack/fx/trails/bolt_fx_pawprint.jpg  -> particle texture when sprinting
+  pack/fx/trails/bolt_fx_crystal_dust.jpg -> dust kick
+  pack/fx/aura/bolt_aura_ring.jpg      -> soft additive billboard around dog
+
+  Wire into existing particle upload (Application::updateParticles).
+
+
+WHAT YOU SHOULD DO (practical order)
+------------------------------------
+  Step 1  Keep Path 1 (fur) — already on
+  Step 2  Path 5 — use FX textures for dust/trails (visual punch)
+  Step 3  Path 2 — idle / run / jump STATE MACHINE in code so 3D dog
+          breathes, sprints harder, can jump (pack videos = reference)
+  Step 4  Later Path 4 if you want true leg animation on the GLB
+
+
+SIMPLE STATE MACHINE (concept)
+------------------------------
+  if jumping:  play jump timer 0..1  -> crouch, air, land Y offsets
+  else if speed > walk threshold:  run phase from speed
+  else:  idle phase slow (breathing)
+
+  Pack files teach the TIMING and POSE of those curves; code implements them.
+
+
+FILE MAP
+--------
+  3D mesh:     assets/characters/bolt/bolt_gsd.glb
+  Live fur:    assets/materials/bolt/bolt_fur_*
+  Pack art:    assets/characters/bolt/pack/
+  Anim code:   src/pcg/BoltGsd.cpp  boltAnimTransforms()
+  Draw code:   src/app/Application.cpp  render()
+  Particles:   src/app/Application.cpp  updateParticles()
+
+
+IMPLEMENTED (Path 2 + Path 5)
+-----------------------------
+  Path 2 DONE in engine code:
+    - Idle breathing when almost still
+    - Run bob/lean/stretch from speed
+    - Space = jump (crouch -> air -> land + height arc)
+    Files: src/pcg/BoltGsd.cpp, src/app/Application.cpp
+
+  Path 5 DONE as GPU particle shapes (pack aesthetics):
+    - kind 0 soft dust
+    - kind 1 Star Moss pawprint trails
+    - kind 2 crystal sparks
+    - kind 3 purple-cyan aura sparks
+    Shaders: assets/shaders/particle.vert/.frag
+
+  Controls in game:
+    WASD move | Shift sprint | Space jump | RMB orbit | F11 fullscreen
+
+BOTTOM LINE
+-----------
+  Pack PNGs still are not skeleton clips.
+  Path 2+5 make the 3D dog *behave* like the pack cycles + FX feel.

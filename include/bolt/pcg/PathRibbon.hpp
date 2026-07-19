@@ -12,10 +12,15 @@ struct PathRibbonCPU {
 };
 
 /**
- * Build a real 3D ribbon mesh from PathGenerator centerline points.
- * halfWidth meters; UV.x across width, UV.y along path 0..1.
+ * Build a 3D ribbon from one centerline.
+ * matId encodes glow strength; elevate lifts above terrain (bridges).
  */
 PathRibbonCPU buildPathRibbon(const std::vector<PathPoint>& pts, float halfWidth,
-                              const HeightField& height, float sprintScore);
+                              const HeightField& height, float sprintScore,
+                              float elevate = 0.f, float glowMat = 1.f);
+
+/** Merge full PathNetwork into one GPU mesh (main + branches + hidden + bridges). */
+PathRibbonCPU buildPathNetworkMesh(const PathNetwork& net, float baseHalfWidth,
+                                   const HeightField& height, float sprintScore);
 
 } // namespace bolt

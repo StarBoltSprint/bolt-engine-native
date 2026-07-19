@@ -9,17 +9,14 @@
 namespace bolt {
 
 void systemPlayerMovement(entt::registry& reg, EngineContext& ctx, float dt) {
+  // Position is integrated in Application::fixedUpdate (WASD + camera-relative wish).
+  // Only sync sprint state / ground stick here — do not double-integrate velocity.
+  (void)dt;
   auto view = reg.view<Transform, Velocity, PlayerTag>();
   for (auto e : view) {
     auto& t = view.get<Transform>(e);
     auto& v = view.get<Velocity>(e);
-
-    // Simple WASD filled externally via Velocity; integrate here
-    t.position += v.linear * dt;
-
-    // Stick to heightfield
     t.position.y = ctx.height.sample(t.position.x, t.position.z, ctx.sprint.score) + 0.9f;
-
     ctx.sprint.position = t.position;
     ctx.sprint.velocity = v.linear;
   }
@@ -105,8 +102,10 @@ void systemPaths(entt::registry& reg, EngineContext& ctx, float dt) {
   if (pathCount >= ctx.budgets.pathCap) return;
   if (!ctx.sprint.sprinting && ctx.sprint.score < 0.4f) return;
 
-  auto pts = ctx.paths.generate(ctx.sprint, ctx.height, 36.f + ctx.sprint.score * 24.f, 12);
-  if (pts.size() < 2) return;
+  auto net = ctx.paths.generateNetwork(ctx.sprint, ctx.height, 36.f + ctx.sprint.score * 24.f, 12,
+                                       nullptr);
+  if (net.paths.empty() || net.paths[0].points.size() < 2) return;
+  ctx.rules.setPathNetwork(net);
 
   auto e = reg.create();
   PathSegment seg;
@@ -134,8 +133,9 @@ void systemBoltAura(entt::registry& reg, EngineContext& ctx, float dt) {
   auto view = reg.view<BoltAura, PlayerTag>();
   for (auto e : view) {
     auto& a = view.get<BoltAura>(e);
+    // Lower target so shell stays a thin rim, not a full cyan ghost
     const float target =
-        (ctx.sprint.sprinting ? 0.35f : 0.05f) + ctx.sprint.score * 0.55f + ctx.sprint.resonance * 0.2f;
+        (ctx.sprint.sprinting ? 0.18f : 0.03f) + ctx.sprint.score * 0.32f + ctx.sprint.resonance * 0.12f;
     a.intensity += (target - a.intensity) * std::min(1.f, dt * 6.f);
     a.pulsePhase += dt * (3.f + a.intensity * 4.f);
   }

@@ -25,7 +25,12 @@ bool SpawnRules::inRunCorridor(const glm::vec3& pos, const glm::vec3& player, fl
 bool SpawnRules::canSpawnSolid(const glm::vec3& pos, const glm::vec3& player, float yaw) const {
   if (tooCloseToPlayer(pos, player, clear_.playerRadius)) return false;
   if (inRunCorridor(pos, player, yaw)) return false;
+  if (nearEnergyPath(pos, 1.8f)) return false; // keep path corridor clear of trees
   return true;
+}
+
+bool SpawnRules::nearEnergyPath(const glm::vec3& pos, float extraMargin) const {
+  return PathGenerator::nearPath(pos, pathNet_, extraMargin);
 }
 
 } // namespace bolt

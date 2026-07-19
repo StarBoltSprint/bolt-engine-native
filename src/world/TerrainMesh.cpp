@@ -1,4 +1,5 @@
 #include "bolt/world/TerrainMesh.hpp"
+#include "bolt/world/TerrainFeatureGenerator.hpp"
 #include <cmath>
 
 namespace bolt {
@@ -22,7 +23,12 @@ TerrainMeshCPU buildTerrainMesh(const HeightField& height, int segs, float sizeM
       VertexPC& vert = mesh.vertices[static_cast<size_t>(iz * n + ix)];
       vert.pos = {x, y, z};
       vert.uv = {u * 8.f, v * 8.f};
-      vert.normal = height.normal(x, z);
+      vert.normal = heightNormalAt(height, x, z, sprintScore);
+      // Feature offset for shader landform coloring (approx; 0 if no features)
+      const float fo =
+          height.features() ? height.features()->heightOffset(x, z, sprintScore) : 0.f;
+      vert.matId = fo; // crater neg, ridge/rock pos
+      vert.pad = 0.f;
     }
   }
 
@@ -43,6 +49,15 @@ TerrainMeshCPU buildTerrainMesh(const HeightField& height, int segs, float sizeM
   }
   (void)half;
   return mesh;
+}
+
+glm::vec3 heightNormalAt(const HeightField& height, float x, float z, float sprintScore,
+                         float eps) {
+  const float hL = height.sample(x - eps, z, sprintScore);
+  const float hR = height.sample(x + eps, z, sprintScore);
+  const float hD = height.sample(x, z - eps, sprintScore);
+  const float hU = height.sample(x, z + eps, sprintScore);
+  return glm::normalize(glm::vec3(hL - hR, 2.f * eps, hD - hU));
 }
 
 } // namespace bolt

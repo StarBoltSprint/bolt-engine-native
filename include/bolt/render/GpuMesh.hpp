@@ -16,24 +16,38 @@ struct VertexPC {
 
 struct FoliageInstanceGPU {
   glm::vec4 posScale; // xyz, w=scale
-  glm::vec4 yawKind;  // x=yaw, y=kind
+  // x=yaw, y=kind, z=colorSeed 0-1, w=meshMorph (lean/squash variation)
+  glm::vec4 yawKind;
 };
 
-/** GPU particle (dust / trail) — matches particle.vert Particle struct */
+/** GPU particle — matches particle.vert Particle struct
+ *  kind: 0 soft dust, 1 pawprint trail, 2 crystal spark, 3 aura spark
+ */
 struct ParticleGPU {
   glm::vec4 posSize;   // xyz, w=size
   glm::vec4 colorLife; // rgb, a=life 0..1
+  glm::vec4 params;    // x=kind, yzw reserved
 };
 
-/** Push constants for bolt mesh (std430-ish: mat4 + vec4) */
+/** Push constants for bolt mesh (mat4 + 2×vec4 = 96 bytes) */
 struct ObjectPush {
   glm::mat4 model;
-  glm::vec4 color;
+  glm::vec4 color; // rgb unused/tint, w = energy 0..1
+  /** x=phase 0..1, y=speedFactor, z=hop (0 idle..1 run), w=1 if fullMesh limb deform */
+  glm::vec4 anim{0.f};
+};
+
+/** Point light from crystals / ruins / aura (many-lights path toward deferred). */
+struct CrystalLightGPU {
+  glm::vec4 posRange;       // xyz world, w attenuation radius
+  glm::vec4 colorIntensity; // rgb, w intensity
 };
 
 struct GpuBuffer {
   VkBuffer buffer = VK_NULL_HANDLE;
-  VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE; // legacy path (non-VMA)
+  void* vmaAllocation = nullptr;         // VmaAllocation when BOLT_USE_VMA
+  void* mapped = nullptr;                // persistent map if any
   VkDeviceSize size = 0;
 };
 

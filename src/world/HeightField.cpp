@@ -1,4 +1,5 @@
 #include "bolt/world/HeightField.hpp"
+#include "bolt/world/TerrainFeatureGenerator.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -83,17 +84,25 @@ float HeightField::sample(float x, float z, float sprintScore) const {
   const float cMicro = fbm(wx * 0.078f + 41.f, wz * 0.078f, 3);
   const float cRidge = ridge(wx * 0.012f, wz * 0.012f, 4);
 
-  float h = cMacro * 3.35f + cMid * 1.9f + cMicro * 0.55f * detailMul + cRidge * 1.05f;
-  h += (hash2(x * 0.55f, z * 0.55f) - 0.5f) * (0.22f + score * 0.12f);
-  // Crystal heightMul ~ soft hills
-  return h * 1.15f * ampMul;
+  // Stronger base undulation so "organic flowing" hills read clearly under features
+  float h = cMacro * 4.6f + cMid * 2.6f + cMicro * 0.75f * detailMul + cRidge * 1.65f;
+  h += (hash2(x * 0.55f, z * 0.55f) - 0.5f) * (0.35f + score * 0.2f);
+  h = h * 1.25f * ampMul;
+
+  // TerrainFeatureGenerator: craters, ridges, rock mounds, veins, sprint look-ahead
+  if (features_) h += features_->heightOffset(x, z, score);
+
+  return h;
 }
 
 glm::vec3 HeightField::normal(float x, float z, float eps) const {
-  const float hL = sample(x - eps, z);
-  const float hR = sample(x + eps, z);
-  const float hD = sample(x, z - eps);
-  const float hU = sample(x, z + eps);
+  // Use score=0 for finite differences when caller uses sample(x,z) overload —
+  // prefer matching full sample via score 0 for consistency of static mesh normals.
+  // Application rebuilds with sprint score; normals should use same.
+  const float hL = sample(x - eps, z, 0.f);
+  const float hR = sample(x + eps, z, 0.f);
+  const float hD = sample(x, z - eps, 0.f);
+  const float hU = sample(x, z + eps, 0.f);
   return glm::normalize(glm::vec3(hL - hR, 2.f * eps, hD - hU));
 }
 

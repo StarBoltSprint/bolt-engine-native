@@ -4,6 +4,7 @@
 #include "bolt/sprint/SpawnBudgets.hpp"
 #include "bolt/world/SpawnRules.hpp"
 #include "bolt/world/HeightField.hpp"
+#include "bolt/world/TerrainFeatureGenerator.hpp"
 #include "bolt/pcg/VegetationSpawner.hpp"
 #include "bolt/pcg/PathGenerator.hpp"
 #include "bolt/render/QualityTier.hpp"
@@ -15,6 +16,7 @@ struct EngineContext {
   SpawnBudgets budgets;
   SpawnRules rules;
   HeightField height;
+  TerrainFeatureGenerator terrainFeatures;
   QualityTier quality = QualityTier::Medium;
   VegetationSpawner vegetation;
   PathGenerator paths;

@@ -12,5 +12,10 @@ assets/grok_inbox/*.jpg
 !assets/grok_inbox/README.txt
 
 tools/blender-portable/
+tools/ffmpeg/
 *.zip
+
+# Local mesh backups / intermediate exports
+*.glb.prev_fox_backup
+*.glb.fox_backup
 
